@@ -2,6 +2,7 @@
 /bin/
 *.test
 
-# seed data stays local only
+# seeding stays local only: the data and the command that loads it
 /seeds/
+/cmd/seed/
 __pycache__/
