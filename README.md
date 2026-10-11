@@ -108,3 +108,29 @@ mongoimport --db familytime --collection questions \
   replaces `source: "seed"` questions, so re-seeding leaves the import alone.
 - A mixed game deals a category first, then a question, so these large
   categories do not crowd out the hand-written ones.
+
+## Table-driven categories
+
+`seeds/bulk/categories/<slug>.jsonl` — one mongoimport-ready file per category,
+each derived from a single hand-checked reference table in `seeds/bulk/data/`:
+
+| File | From |
+|---|---|
+| `countries`, `capitals`, `currencies`, `country-scramble` | `data/countries.txt` |
+| `synonyms`, `antonyms` | `data/thesaurus.txt` |
+| `nigerian-acronyms` | `data/nigerian-acronyms.txt` |
+| `definitions` | `data/definitions.txt` |
+
+```bash
+for f in seeds/bulk/categories/*.jsonl; do
+  mongoimport --db familytime --collection questions --file "$f" --mode upsert
+done
+```
+
+To change a fact, edit the table and re-run its generator (`gen_countries.py`,
+`gen_thesaurus.py`, `gen_acronyms.py`, `gen_definitions.py`), then
+`verify_tables.py`, which re-reads the tables on its own and confirms that in
+every question the marked answer is true and all three wrong answers are false.
+
+Nigerian History and Nigerian Governance are hand-written, in
+`seeds/questions/`, and load with `go run ./cmd/seed` like the original ten.

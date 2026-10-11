@@ -21,6 +21,21 @@ const (
 	CategoryMissing  = "missing"
 	CategorySpelling = "spelling"
 	CategoryABC      = "abc"
+
+	// Table-driven categories. Each is derived from one hand-checked reference
+	// table in seeds/bulk/data and imported from seeds/bulk/categories.
+	CategoryCountries       = "countries"
+	CategoryCapitals        = "capitals"
+	CategoryCurrencies      = "currencies"
+	CategoryCountryScramble = "country-scramble"
+	CategorySynonyms        = "synonyms"
+	CategoryAntonyms        = "antonyms"
+	CategoryNigerianAcronym = "nigerian-acronyms"
+	CategoryDefinitions     = "definitions"
+
+	// Hand-written, like the original ten (seeds/questions/<slug>.txt).
+	CategoryNigeriaHistory    = "nigeria-history"
+	CategoryNigeriaGovernance = "nigeria-governance"
 )
 
 // Where a question came from. The seed command owns "seed" questions and
@@ -48,6 +63,16 @@ var Categories = []Category{
 	{Slug: CategoryMissing, Label: "Missing Letters", Emoji: "🧩", Blurb: "Find the letter that fits", Colour: "#5BC0EB"},
 	{Slug: CategorySpelling, Label: "Spelling Bee", Emoji: "🐝", Blurb: "Spot the right spelling", Colour: "#F7C948"},
 	{Slug: CategoryABC, Label: "ABC Order", Emoji: "🔡", Blurb: "Which word comes first?", Colour: "#E85A4F"},
+	{Slug: CategoryCountries, Label: "World Countries", Emoji: "🗺️", Blurb: "Continents and first letters", Colour: "#2D5BFF"},
+	{Slug: CategoryCapitals, Label: "Capital Cities", Emoji: "🏙️", Blurb: "Which capital, which country?", Colour: "#5BC0EB"},
+	{Slug: CategoryCurrencies, Label: "World Currencies", Emoji: "💱", Blurb: "Who spends what, where", Colour: "#27B973"},
+	{Slug: CategoryCountryScramble, Label: "Country Puzzles", Emoji: "🧭", Blurb: "Rearrange a country's name", Colour: "#FF8A2A"},
+	{Slug: CategorySynonyms, Label: "Synonyms", Emoji: "🤝", Blurb: "Words that mean the same", Colour: "#27B973"},
+	{Slug: CategoryAntonyms, Label: "Antonyms", Emoji: "↔️", Blurb: "Words that mean the opposite", Colour: "#E85A4F"},
+	{Slug: CategoryDefinitions, Label: "Definitions", Emoji: "📚", Blurb: "Match the word to its meaning", Colour: "#7B4FBF"},
+	{Slug: CategoryNigerianAcronym, Label: "Nigerian Acronyms", Emoji: "🔠", Blurb: "INEC, JAMB, UNILAG and friends", Colour: "#1F9A60"},
+	{Slug: CategoryNigeriaHistory, Label: "Nigerian History", Emoji: "📜", Blurb: "From the kingdoms to the Fourth Republic", Colour: "#B5651D"},
+	{Slug: CategoryNigeriaGovernance, Label: "Nigerian Governance", Emoji: "🏛️", Blurb: "How the country is run", Colour: "#2D5BFF"},
 }
 
 func FindCategory(slug string) (Category, bool) {
