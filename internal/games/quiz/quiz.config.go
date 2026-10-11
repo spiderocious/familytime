@@ -1,0 +1,167 @@
+// Package quiz is the family quiz: everyone answers the same multiple-choice
+// question at once, and a right answer scores more the faster it lands.
+package quiz
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"familytime/backend/internal/engine"
+	"familytime/backend/internal/features/questions"
+	"familytime/backend/internal/shared/messages"
+)
+
+const GameID = "quiz"
+
+type Pacing string
+
+const (
+	// The game moves itself along on timers.
+	PacingAuto Pacing = "auto"
+	// The reveal and scoreboards wait for the host to press Next.
+	PacingHost Pacing = "host"
+)
+
+// DifficultyMixed draws from every difficulty.
+const DifficultyMixed = "mixed"
+
+const (
+	MinRounds          = 1
+	MaxRounds          = 20
+	MinPerRound        = 3
+	MaxPerRound        = 30
+	MinSeconds         = 5
+	MaxSeconds         = 60
+	DefaultRounds      = 3
+	DefaultPerRound    = 10
+	DefaultSeconds     = 20
+	maxCategoriesShown = 2
+)
+
+// SecondsChoices are the timer lengths the setup screen offers.
+var SecondsChoices = []int{10, 15, 20, 30}
+
+type Config struct {
+	Difficulty string `json:"difficulty"`
+	// Empty means every category, mixed together.
+	Categories        []string `json:"categories"`
+	Rounds            int      `json:"rounds"`
+	QuestionsPerRound int      `json:"questions_per_round"`
+	// Endless ignores Rounds: the game runs until the host ends it.
+	Endless            bool   `json:"endless"`
+	SecondsPerQuestion int    `json:"seconds_per_question"`
+	Pacing             Pacing `json:"pacing"`
+}
+
+func defaultConfig() Config {
+	return Config{
+		Difficulty:         DifficultyMixed,
+		Categories:         []string{},
+		Rounds:             DefaultRounds,
+		QuestionsPerRound:  DefaultPerRound,
+		Endless:            false,
+		SecondsPerQuestion: DefaultSeconds,
+		Pacing:             PacingAuto,
+	}
+}
+
+// parseConfig applies defaults for anything missing, then validates. Every
+// invalid field is reported, not just the first.
+func parseConfig(raw json.RawMessage) (Config, map[string][]string) {
+	config := defaultConfig()
+	fieldErrors := map[string][]string{}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if err := json.Unmarshal(trimmed, &config); err != nil {
+			fieldErrors["config"] = []string{messages.Resolve(messages.FieldConfigMalformed)}
+			return defaultConfig(), fieldErrors
+		}
+	}
+
+	if config.Difficulty != DifficultyMixed && !questions.IsDifficulty(config.Difficulty) {
+		fieldErrors["difficulty"] = []string{messages.Resolve(messages.FieldDifficultyUnknown)}
+	}
+
+	seen := map[string]bool{}
+	categories := []string{}
+	for _, slug := range config.Categories {
+		if _, ok := questions.FindCategory(slug); !ok {
+			fieldErrors["categories"] = []string{messages.Resolve(messages.FieldCategoryUnknown)}
+			break
+		}
+		if !seen[slug] {
+			seen[slug] = true
+			categories = append(categories, slug)
+		}
+	}
+	// Picking every category is the same request as picking none.
+	if len(categories) == len(questions.Categories) {
+		categories = []string{}
+	}
+	config.Categories = categories
+
+	if config.Rounds < MinRounds || config.Rounds > MaxRounds {
+		fieldErrors["rounds"] = []string{messages.Resolve(messages.FieldRoundsRange)}
+	}
+	if config.QuestionsPerRound < MinPerRound || config.QuestionsPerRound > MaxPerRound {
+		fieldErrors["questions_per_round"] = []string{messages.Resolve(messages.FieldPerRoundRange)}
+	}
+	if config.SecondsPerQuestion < MinSeconds || config.SecondsPerQuestion > MaxSeconds {
+		fieldErrors["seconds_per_question"] = []string{messages.Resolve(messages.FieldSecondsRange)}
+	}
+	if config.Pacing != PacingAuto && config.Pacing != PacingHost {
+		fieldErrors["pacing"] = []string{messages.Resolve(messages.FieldPacingUnknown)}
+	}
+
+	return config, fieldErrors
+}
+
+func (c Config) filter() questions.Filter {
+	filter := questions.Filter{Categories: c.Categories}
+	if c.Difficulty != DifficultyMixed {
+		filter.Difficulty = questions.Difficulty(c.Difficulty)
+	}
+	return filter
+}
+
+// Facts is the short, public description of the settings shown in the lobby.
+func (c Config) Facts() []engine.Fact {
+	length := fmt.Sprintf("%d rounds × %d questions", c.Rounds, c.QuestionsPerRound)
+	if c.Rounds == 1 {
+		length = fmt.Sprintf("%d questions", c.QuestionsPerRound)
+	}
+	if c.Endless {
+		length = fmt.Sprintf("Endless · rounds of %d", c.QuestionsPerRound)
+	}
+
+	categories := "Everything"
+	if len(c.Categories) > 0 {
+		labels := []string{}
+		for _, slug := range c.Categories {
+			if category, ok := questions.FindCategory(slug); ok {
+				labels = append(labels, category.Label)
+			}
+		}
+		if len(labels) > maxCategoriesShown {
+			categories = fmt.Sprintf("%s + %d more", labels[0], len(labels)-1)
+		} else {
+			categories = strings.Join(labels, " & ")
+		}
+	}
+
+	pace := "Moves on its own"
+	if c.Pacing == PacingHost {
+		pace = "Host presses Next"
+	}
+
+	return []engine.Fact{
+		{Label: "Length", Value: length},
+		{Label: "Topics", Value: categories},
+		{Label: "Difficulty", Value: strings.ToUpper(c.Difficulty[:1]) + c.Difficulty[1:]},
+		{Label: "Timer", Value: fmt.Sprintf("%ds per question", c.SecondsPerQuestion)},
+		{Label: "Pace", Value: pace},
+	}
+}

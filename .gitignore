@@ -1,0 +1,7 @@
+.env
+/bin/
+*.test
+
+# seed data stays local only
+/seeds/
+__pycache__/

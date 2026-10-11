@@ -1,0 +1,110 @@
+# Family Time / backend
+
+Go + Gin API with a websocket gateway. MongoDB for the question bank and the
+record of finished games. Live rooms are held in memory.
+
+## Quick start
+
+```bash
+cp .env.example .env
+go run ./cmd/seed          # validate the question files and load them
+go run ./cmd/seed -check   # validate only; writes nothing
+go run ./cmd/server        # http://localhost:4100
+```
+
+## Layout
+
+```
+cmd/server            boot, cache warm-up, graceful shutdown
+cmd/seed              question loader + the generated Quick Maths set
+seeds/questions/      the bank, one file per category: difficulty|question|correct|wrong|wrong|wrong
+
+internal/
+  app/                Build() — middleware and feature registration, in order
+  env/                parsed once, fails loudly
+
+  engine/             rooms, the runtime, and the contract a game implements
+  games/quiz/         the quiz: config, state machine, scoring, views
+
+  features/<name>/    the unit of work is a feature, not a layer
+    *.routes.go         Register(app) — owns its own route order
+    *.controller.go     thin: read the request, call the service, respond
+    *.service.go        business logic; returns result.Result[T], never sees the request
+    *.repo.go           data access only
+    *.schema.go         request validation
+    *.types.go          stored types and wire types
+
+  lib/                response, result, ids, db, logger, reqctx
+  shared/             constants (error codes, severity), messages, middleware
+```
+
+## The rules that matter here
+
+- **Services never return an error for a domain failure.** They return
+  `result.Result[T]`. The controller hands a failure to `response.Bail`, so one
+  middleware renders every error.
+- **Services never see the HTTP request.** Request identity travels in the
+  `context.Context`.
+- **Never `c.JSON` in a handler.** Everything goes through `lib/response`.
+- **Never an inline response string.** Copy resolves from `shared/messages`.
+- **Every variant string is a named constant** — error codes, phases, message
+  types, effect kinds.
+- **The error envelope has three jobs, one field each:** `code` to branch on,
+  `message` to display, `severity` to measure. `rejection_reason` is an
+  operator diagnostic and not part of the contract.
+- **A game owns no clocks, sockets or storage.** It returns `Effect`s and the
+  room executes them; `now` is always passed in. That is what lets a whole game
+  be replayed in a unit test.
+- **The answer is withheld server-side** until the reveal. It is not in the
+  payload a client receives while the question is open.
+
+## Why starting a game is instant
+
+The whole question bank is read into memory at boot and indexed by category and
+difficulty (about 10 ms for 1,056 questions). Dealing a deck is slice work with
+no I/O, the setup screen's category counts are precomputed, and finished games
+are written behind — the podium shows first, the database catches up.
+
+## API
+
+| Method | Path | |
+|---|---|---|
+| GET | `/health`, `/health/ready` | probes; ready reports the database and the cache |
+| GET | `/api/v1/games` | games that can be hosted |
+| GET | `/api/v1/games/:gameId/options` | what the setup screen can offer |
+| POST | `/api/v1/rooms` | open a room → `code`, `host_token` |
+| GET | `/api/v1/rooms/:code` | public summary, for a joiner |
+| POST | `/api/v1/rooms/:code/players` | take a seat → `player_token` |
+| GET | `/api/v1/results?cursor=&limit=` | finished games, newest first, cursor-paged |
+| GET | `/ws?code=&role=host\|player&token=` | the realtime gateway |
+
+Over the socket the server sends the **whole state** on every change
+(`server.state`), so a reconnect needs no replay. Clients send
+`{ "type": ..., "payload": ... }`: `host.configure`, `host.start`, `host.next`,
+`host.end_game`, `host.play_again`, `host.back_to_lobby`, `host.close_room`,
+`quiz.answer`, `player.react`.
+
+Testing and the full verification record: [`docs/qas/backend-qa-handoff.md`](docs/qas/backend-qa-handoff.md).
+
+## The bulk puzzle set (207,684 questions)
+
+`seeds/bulk/questions-bulk.jsonl` is a mongoimport-ready file of generated
+puzzle questions for seven categories: Quick Maths, Number Puzzles, Time &
+Money, Word Scramble, Missing Letters, Spelling Bee and ABC Order.
+
+```bash
+mongoimport --db familytime --collection questions \
+  --file seeds/bulk/questions-bulk.jsonl --mode upsert
+# then restart the server: the bank is cached at boot
+```
+
+- Nothing in it is typed-in trivia. Every answer is computed, or derived from
+  the spelling of a word, by `seeds/bulk/generate.py` (fixed seed, so the
+  output and the ids are identical on every run — re-importing updates, never
+  duplicates).
+- `seeds/bulk/verify.py` re-derives every answer from the question text by a
+  separate route and fails if any differs, or if any wrong option is also right.
+- Imported questions carry `source: "import"`. `go run ./cmd/seed` only ever
+  replaces `source: "seed"` questions, so re-seeding leaves the import alone.
+- A mixed game deals a category first, then a question, so these large
+  categories do not crowd out the hand-written ones.
