@@ -15,6 +15,7 @@ import (
 	"familytime/backend/internal/features/results"
 	"familytime/backend/internal/features/rooms"
 	"familytime/backend/internal/features/solo"
+	"familytime/backend/internal/features/wallet"
 	"familytime/backend/internal/games/quiz"
 	"familytime/backend/internal/lib/vatar"
 	"familytime/backend/internal/shared/middleware"
@@ -27,6 +28,8 @@ type Deps struct {
 	Results *results.Service
 	// The Lagos Life client. Nil builds one from the environment.
 	Platform platform.Platform
+	// Where gem balances live. Nil keeps them in memory only.
+	Wallets wallet.Store
 }
 
 type App struct {
@@ -79,7 +82,10 @@ func Build(deps Deps) *App {
 	origins := middleware.NewOriginPolicy(deps.Env.CORSOrigins, !deps.Env.IsProduction())
 
 	soloService := solo.NewService(registry)
-	platformService = platform.NewService(deps.Platform, registry, soloService)
+	if deps.Wallets == nil {
+		deps.Wallets = wallet.NewMemory()
+	}
+	platformService = platform.NewService(deps.Platform, registry, soloService, deps.Wallets, deps.Env.VatarWebhookSecret)
 
 	router := gin.New()
 	// One trusted hop, not an arbitrary chain a client could forge.

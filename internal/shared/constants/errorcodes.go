@@ -40,6 +40,12 @@ const (
 	CodeMatchNotReady       ErrorCode = "match_not_ready"
 	CodeNotInMatch          ErrorCode = "not_in_match"
 
+	// Purchases and gems
+	CodePurchaseNotFound ErrorCode = "purchase_not_found"
+	CodePurchaseRefunded ErrorCode = "purchase_refunded"
+	CodeNotEnoughGems    ErrorCode = "not_enough_gems"
+	CodeBadSignature     ErrorCode = "bad_signature"
+
 	// Server
 	CodeInternal ErrorCode = "internal"
 )
@@ -82,6 +88,12 @@ var severityByCode = map[ErrorCode]Severity{
 	// The platform being down is an upstream fault, not the player's.
 	CodePlatformUnavailable: SeverityUpstream,
 	CodeNotHost:             SeverityForbidden,
+
+	CodePurchaseNotFound: SeverityNotFound,
+	CodePurchaseRefunded: SeverityConflict,
+	CodeNotEnoughGems:    SeverityBusinessRule,
+	// Nobody but the platform should be calling the webhook at all.
+	CodeBadSignature: SeveritySuspiciousValidation,
 
 	CodeNotEnoughPlayers:   SeverityBusinessRule,
 	CodeNoQuestions:        SeverityBusinessRule,

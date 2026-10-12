@@ -25,9 +25,15 @@ const (
 	PlatformMatchWait   Key = "platform.match_not_ready"
 	PlatformNotInMatch  Key = "platform.not_in_match"
 	FieldSessionMissing Key = "field.session_required"
-	RoomsNameTaken      Key = "rooms.name_taken"
-	RoomsInvalidToken   Key = "rooms.invalid_token"
-	RoomsNotHost        Key = "rooms.not_host"
+
+	StorePurchaseNotFound Key = "store.purchase_not_found"
+	StorePurchaseRefunded Key = "store.purchase_refunded"
+	StoreNotEnoughGems    Key = "store.not_enough_gems"
+	StoreBadSignature     Key = "store.bad_signature"
+	StoreNotYourGame      Key = "store.not_your_game"
+	RoomsNameTaken        Key = "rooms.name_taken"
+	RoomsInvalidToken     Key = "rooms.invalid_token"
+	RoomsNotHost          Key = "rooms.not_host"
 
 	PlayNotEnoughPlayers Key = "play.not_enough_players"
 	PlayNeedOpponent     Key = "play.need_opponent"
@@ -69,9 +75,15 @@ var catalog = map[Key]string{
 	PlatformMatchWait:   "That match has not started yet.",
 	PlatformNotInMatch:  "You are not one of the players in that match.",
 	FieldSessionMissing: "A session is required.",
-	RoomsNameTaken:      "Someone in this game already has that name. Pick another.",
-	RoomsInvalidToken:   "Your place in this game could not be confirmed. Join again.",
-	RoomsNotHost:        "Only the host can do that.",
+
+	StorePurchaseNotFound: "We could not find that purchase. If you were charged, it will arrive shortly.",
+	StorePurchaseRefunded: "That purchase was refunded, so nothing was added.",
+	StoreNotEnoughGems:    "You do not have enough gems for that.",
+	StoreBadSignature:     "That request was not signed correctly.",
+	StoreNotYourGame:      "That is not your game.",
+	RoomsNameTaken:        "Someone in this game already has that name. Pick another.",
+	RoomsInvalidToken:     "Your place in this game could not be confirmed. Join again.",
+	RoomsNotHost:          "Only the host can do that.",
 
 	PlayNotEnoughPlayers: "At least one player needs to join before the game can start.",
 	PlayNeedOpponent:     "Wait for another player to join before starting.",
@@ -107,6 +119,10 @@ var defaultByCode = map[constants.ErrorCode]Key{
 	constants.CodeSessionInvalid:      PlatformSession,
 	constants.CodeMatchNotReady:       PlatformMatchWait,
 	constants.CodeNotInMatch:          PlatformNotInMatch,
+	constants.CodePurchaseNotFound:    StorePurchaseNotFound,
+	constants.CodePurchaseRefunded:    StorePurchaseRefunded,
+	constants.CodeNotEnoughGems:       StoreNotEnoughGems,
+	constants.CodeBadSignature:        StoreBadSignature,
 	constants.CodeNameTaken:           RoomsNameTaken,
 	constants.CodeInvalidToken:        RoomsInvalidToken,
 	constants.CodeNotHost:             RoomsNotHost,

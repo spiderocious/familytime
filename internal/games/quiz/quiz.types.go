@@ -18,6 +18,13 @@ const (
 	ActionAnswer  = "quiz.answer"
 	ActionNext    = "host.next"
 	ActionEndGame = "host.end_game"
+	// A one-player game may be paused by its player (the platform puts the
+	// game in the background). Nobody else's clock is affected.
+	ActionPause  = "host.pause"
+	ActionResume = "host.resume"
+	// ActionReveal shows a player the right answer. Only the server may raise
+	// it, after the reveal has been paid for.
+	ActionReveal = "quiz.reveal"
 )
 
 // AnswerResult is how a player's answer to the current question turned out.
@@ -80,14 +87,20 @@ type View struct {
 	Quick          bool           `json:"quick"`
 	PhaseStartedAt engine.EpochMs `json:"phase_started_at"`
 	// Absolute. 0 means the phase waits for the host.
-	Deadline    engine.EpochMs `json:"deadline"`
-	Question    *QuestionView  `json:"question"`
-	AnsweredIDs []string       `json:"answered_ids"`
-	ActiveCount int            `json:"active_count"`
-	Reveal      *RevealView    `json:"reveal"`
-	Board       []BoardRow     `json:"board"`
-	You         *YouView       `json:"you"`
-	Final       *FinalView     `json:"final"`
+	Deadline engine.EpochMs `json:"deadline"`
+	// Paused freezes the clock at PausedLeftMs. Only a one-player game pauses.
+	Paused       bool  `json:"paused"`
+	PausedLeftMs int64 `json:"paused_left_ms"`
+	// RevealCost is what showing the answer to this question costs, in gems.
+	// Zero where reveals are not offered: any game with more than one player.
+	RevealCost  int           `json:"reveal_cost"`
+	Question    *QuestionView `json:"question"`
+	AnsweredIDs []string      `json:"answered_ids"`
+	ActiveCount int           `json:"active_count"`
+	Reveal      *RevealView   `json:"reveal"`
+	Board       []BoardRow    `json:"board"`
+	You         *YouView      `json:"you"`
+	Final       *FinalView    `json:"final"`
 }
 
 func (View) GameID() string { return GameID }
@@ -137,6 +150,12 @@ type YouView struct {
 	Score    int          `json:"score"`
 	Rank     int          `json:"rank"`
 	Streak   int          `json:"streak"`
+	// HintIdx is the right answer, sent only to a player who has paid to see
+	// it for the question in play.
+	HintIdx *int `json:"hint_idx"`
+	// Hinted is true when this question was answered with a reveal, which is
+	// why it earned base points only.
+	Hinted bool `json:"hinted"`
 }
 
 type FinalView struct {

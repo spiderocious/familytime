@@ -181,6 +181,40 @@ func (r *Room) starterID() string {
 	return ""
 }
 
+// ServerAction runs a game action for a player on the server's own authority.
+// The game sees it as Trusted, which no socket message ever is.
+func (r *Room) ServerAction(playerID, actionType string, payload json.RawMessage) *result.Failure {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.phase == PhaseClosed {
+		return fail(constants.CodeRoomClosed, messages.RoomsClosed, constants.StatusGone)
+	}
+	player := r.findPlayer(playerID)
+	if r.instance == nil || player == nil {
+		return fail(constants.CodeNoActiveGame, messages.PlayNoActiveGame, constants.StatusConflict)
+	}
+	now := r.deps.now()
+	r.lastActivity = now
+	ctx := ActionCtx{Role: AudiencePlayer, IsHost: playerID == r.ownerID, Trusted: true, Actor: player.ref(), Now: now}
+	effects, failure := r.instance.OnAction(Action{Type: actionType, Payload: payload}, ctx)
+	if failure != nil {
+		return failure
+	}
+	r.execute(effects)
+	return nil
+}
+
+// PlayerView is the running game as one player sees it, or nil between games.
+func (r *Room) PlayerView(playerID string) View {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.instance == nil {
+		return nil
+	}
+	return r.instance.View(Audience{Kind: AudiencePlayer, PlayerID: playerID})
+}
+
 // Close ends the room for everyone, on the server's own authority.
 func (r *Room) Close() {
 	r.mu.Lock()

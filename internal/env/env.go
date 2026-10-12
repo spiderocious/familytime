@@ -26,6 +26,8 @@ type Env struct {
 	VatarBaseURL       string
 	VatarSecret        string
 	VatarResultsSecret string
+	// Signs the webhooks the platform sends us. Without it they are refused.
+	VatarWebhookSecret string
 }
 
 const (
@@ -61,6 +63,7 @@ func Load() (Env, error) {
 		VatarBaseURL:       get("VATAR_API_BASE", ""),
 		VatarSecret:        get("VATAR_SECRET", ""),
 		VatarResultsSecret: get("VATAR_RESULTS_SECRET", ""),
+		VatarWebhookSecret: get("VATAR_WEBHOOK_SECRET", ""),
 	}
 	if e.MongoURI == "" || e.MongoDB == "" {
 		return Env{}, fmt.Errorf("MONGODB_URI and MONGODB_DB are required")

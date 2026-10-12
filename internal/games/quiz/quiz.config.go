@@ -85,6 +85,36 @@ func (c Config) MultiplierPct() int {
 	return pct * timerPct(c.SecondsPerQuestion) / 100
 }
 
+// What one answer reveal costs, in gems. Harder settings cost more, and so
+// does the back half of a run, where one wrong answer undoes the most.
+var revealBase = map[string]int{"easy": 1, DifficultyMixed: 2, "medium": 2, "hard": 3}
+
+const (
+	revealLateStep    = 1
+	revealMidPercent  = 40
+	revealLatePercent = 70
+)
+
+// RevealCost prices a reveal for the question at this position in its round.
+func (c Config) RevealCost(questionInRound int) int {
+	cost, ok := revealBase[c.Difficulty]
+	if !ok {
+		cost = revealBase[DifficultyMixed]
+	}
+	if c.QuestionsPerRound <= 0 {
+		return cost
+	}
+	// Position of the question just before this one: the first is 0%.
+	progress := (questionInRound - 1) * 100 / c.QuestionsPerRound
+	if progress >= revealMidPercent {
+		cost += revealLateStep
+	}
+	if progress >= revealLatePercent {
+		cost += revealLateStep
+	}
+	return cost
+}
+
 func defaultConfig() Config {
 	return Config{
 		Difficulty:         DifficultyMixed,

@@ -106,8 +106,12 @@ type ActionCtx struct {
 	// (a solo game has no host screen: the one player runs it). Role stays
 	// "player" for an owner, because an owner still answers questions.
 	IsHost bool
-	Actor  PlayerRef // zero for the host
-	Now    EpochMs
+	// Trusted marks an action the server itself raised on a player's behalf,
+	// after checks no client can make (a paid-for answer reveal). It is never
+	// set for a message that arrived over a socket.
+	Trusted bool
+	Actor   PlayerRef // zero for the host
+	Now     EpochMs
 }
 
 type InitInput struct {

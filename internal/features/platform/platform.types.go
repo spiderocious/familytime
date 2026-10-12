@@ -20,3 +20,29 @@ type SeatView struct {
 	// The platform mode the session came from: test, live or dev.
 	Mode string `json:"mode"`
 }
+
+// ProductView is a gem pack on sale. Its price is the platform's to show.
+type ProductView struct {
+	ID   string `json:"id"`
+	Gems int    `json:"gems"`
+}
+
+type WalletView struct {
+	Gems     int           `json:"gems"`
+	Products []ProductView `json:"products"`
+}
+
+// ClaimView is the balance after a purchase was settled.
+type ClaimView struct {
+	Gems int `json:"gems"`
+	// False when this purchase had already been turned into gems.
+	Credited bool `json:"credited"`
+	Added    int  `json:"added"`
+}
+
+// RevealView is the right answer a player paid to see, and what it cost.
+type RevealView struct {
+	AnswerIdx int `json:"answer_idx"`
+	Cost      int `json:"cost"`
+	Gems      int `json:"gems"`
+}

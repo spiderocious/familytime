@@ -69,6 +69,59 @@ type instance struct {
 	phaseStartedAt engine.EpochMs
 	deadline       engine.EpochMs
 	reveal         *RevealView
+
+	// Players shown the answer to the question in play.
+	hints map[string]bool
+	// A paused game remembers when it stopped and how long its phase had left.
+	paused       bool
+	pausedAt     engine.EpochMs
+	pausedLeftMs int64
+}
+
+// alone reports a one-player game: the only kind that can be paused, and the
+// only kind where a reveal can be bought.
+func (g *instance) alone() bool { return len(g.players) == 1 }
+
+func (g *instance) pause(now engine.EpochMs) []engine.Effect {
+	if g.paused || g.phase == PhaseFinished || g.deadline <= 0 {
+		return nil
+	}
+	g.paused = true
+	g.pausedAt = now
+	g.pausedLeftMs = max(0, g.deadline-now)
+	return []engine.Effect{engine.ClearTimer(timerPhase), engine.Broadcast()}
+}
+
+// resume restarts the clock with exactly the time it had left, and moves the
+// phase start forward by the length of the pause so that time is not counted
+// against the player's answer speed.
+func (g *instance) resume(now engine.EpochMs) []engine.Effect {
+	if !g.paused {
+		return nil
+	}
+	g.paused = false
+	g.phaseStartedAt += now - g.pausedAt
+	g.deadline = now + g.pausedLeftMs
+	return []engine.Effect{engine.StartTimer(timerPhase, g.deadline), engine.Broadcast()}
+}
+
+// onReveal marks the right answer as shown to this player.
+func (g *instance) onReveal(payload json.RawMessage, ctx engine.ActionCtx) ([]engine.Effect, *result.Failure) {
+	var body struct {
+		QuestionSeq int `json:"question_seq"`
+	}
+	_ = json.Unmarshal(payload, &body)
+	if !ctx.Trusted || !g.alone() || g.players[ctx.Actor.ID] == nil {
+		return nil, invalidAction()
+	}
+	if g.phase != PhaseQuestion || g.current == nil || body.QuestionSeq != g.questionSeq {
+		return nil, invalidAction()
+	}
+	if _, answered := g.answers[ctx.Actor.ID]; answered || g.hints[ctx.Actor.ID] {
+		return nil, invalidAction()
+	}
+	g.hints[ctx.Actor.ID] = true
+	return []engine.Effect{engine.Broadcast()}, nil
 }
 
 // enter moves to a phase. A zero duration means "wait for the host".
@@ -139,6 +192,18 @@ func (g *instance) OnAction(action engine.Action, ctx engine.ActionCtx) ([]engin
 			return nil, &result.Failure{Code: constants.CodeNotHost, MessageKey: messages.RoomsNotHost, Status: constants.StatusForbidden}
 		}
 		return g.finish(ctx.Now), nil
+
+	case ActionPause, ActionResume:
+		if !ctx.IsHost || !g.alone() {
+			return nil, &result.Failure{Code: constants.CodeNotHost, MessageKey: messages.RoomsNotHost, Status: constants.StatusForbidden}
+		}
+		if action.Type == ActionPause {
+			return g.pause(ctx.Now), nil
+		}
+		return g.resume(ctx.Now), nil
+
+	case ActionReveal:
+		return g.onReveal(action.Payload, ctx)
 
 	case ActionAnswer:
 		return g.onAnswer(action.Payload, ctx)
@@ -261,6 +326,7 @@ func (g *instance) ask(now engine.EpochMs) []engine.Effect {
 		difficulty: question.Difficulty,
 	}
 	g.answers = map[string]answer{}
+	g.hints = map[string]bool{}
 	g.reveal = nil
 	g.questionInRnd++
 	g.questionSeq++
@@ -320,7 +386,13 @@ func (g *instance) closeQuestion(now engine.EpochMs) []engine.Effect {
 		p.bestStreak = max(p.bestStreak, p.streak)
 		p.correct++
 		p.correctMs += elapsed
-		p.lastDelta = pointsFor(elapsed, windowMs, p.streak) * g.cfg.MultiplierPct() / 100
+		points := pointsFor(elapsed, windowMs, p.streak)
+		if g.hints[id] {
+			// A bought answer is worth the base only: no speed, no streak
+			// bonus. Knowing it still has to pay better than buying it.
+			points = BasePoints
+		}
+		p.lastDelta = points * g.cfg.MultiplierPct() / 100
 		p.score += p.lastDelta
 		p.roundScore += p.lastDelta
 		p.lastResult = ResultCorrect
@@ -415,6 +487,14 @@ func (g *instance) View(audience engine.Audience) engine.View {
 		Deadline:          g.deadline,
 		AnsweredIDs:       []string{},
 		Board:             board,
+		Paused:            g.paused,
+	}
+	if g.paused {
+		// A frozen clock: the deadline is shown as if the pause began now.
+		view.PausedLeftMs = g.pausedLeftMs
+	}
+	if g.alone() && g.cfg.Quick && g.phase == PhaseQuestion {
+		view.RevealCost = g.cfg.RevealCost(g.questionInRnd)
 	}
 
 	for id, p := range g.players {
@@ -457,6 +537,13 @@ func (g *instance) View(audience engine.Audience) engine.View {
 				choice := given.choice
 				you.Answered = true
 				you.Choice = &choice
+			}
+			if g.hints[audience.PlayerID] && g.current != nil && (g.phase == PhaseQuestion || g.phase == PhaseReveal) {
+				you.Hinted = true
+				if g.phase == PhaseQuestion {
+					idx := g.current.answerIdx
+					you.HintIdx = &idx
+				}
 			}
 			// Whether it was right is as secret as the answer itself.
 			if g.phase != PhaseQuestion && g.phase != PhaseIntro {

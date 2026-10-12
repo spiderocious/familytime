@@ -12,6 +12,9 @@ import (
 type SessionBody struct {
 	Session string          `json:"session"`
 	Config  json.RawMessage `json:"config"`
+	// For a reveal: the question it is for, so a slow request can never be
+	// charged against the next one.
+	QuestionSeq int `json:"question_seq"`
 }
 
 func (b *SessionBody) Validate() map[string][]string {

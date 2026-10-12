@@ -407,3 +407,118 @@ func TestCanStart_RefusesWhenNothingMatches(t *testing.T) {
 		t.Fatalf("science has questions but start was refused: %s", failure.Code)
 	}
 }
+
+func TestRevealCost_RisesWithDifficultyAndTowardsTheEnd(t *testing.T) {
+	cases := []struct {
+		difficulty string
+		question   int
+		want       int
+	}{
+		{"easy", 1, 1}, {"easy", 4, 1}, {"easy", 5, 2}, {"easy", 7, 2}, {"easy", 8, 3}, {"easy", 10, 3},
+		{DifficultyMixed, 1, 2}, {"medium", 6, 3}, {"hard", 1, 3}, {"hard", 10, 5},
+	}
+	for _, c := range cases {
+		cfg := Config{Difficulty: c.difficulty, QuestionsPerRound: 10}
+		if got := cfg.RevealCost(c.question); got != c.want {
+			t.Errorf("%s question %d: cost %d, want %d", c.difficulty, c.question, got, c.want)
+		}
+	}
+}
+
+// soloGame is one player on the quick tempo, already on the first question.
+func soloGame(t *testing.T) (*instance, engine.EpochMs) {
+	t.Helper()
+	cfg := SoloConfig(defaultConfig())
+	inst, _ := NewGame(fixtureBank(30)).New(engine.InitInput{
+		Config: cfg, Roster: []engine.RosterEntry{{Player: ada, Connected: true}}, Seed: 7, Now: t0,
+	})
+	g := inst.(*instance)
+	g.OnTimer(timerPhase, g.deadline) // intro → first question
+	if g.phase != PhaseQuestion {
+		t.Fatalf("phase = %s, want question", g.phase)
+	}
+	return g, g.phaseStartedAt
+}
+
+func revealPayload(seq int) json.RawMessage {
+	raw, _ := json.Marshal(map[string]int{"question_seq": seq})
+	return raw
+}
+
+func TestReveal_ShowsTheAnswerAndPaysBaseOnly(t *testing.T) {
+	g, start := soloGame(t)
+	player := engine.ActionCtx{Role: engine.AudiencePlayer, IsHost: true, Actor: ada, Now: start + 500}
+
+	// A reveal a client asks for itself is refused: only the server, having
+	// taken payment, may raise one.
+	if _, failure := g.OnAction(engine.Action{Type: ActionReveal, Payload: revealPayload(g.questionSeq)}, player); failure == nil {
+		t.Fatal("an untrusted reveal must be refused")
+	}
+	view := g.View(engine.Audience{Kind: engine.AudiencePlayer, PlayerID: ada.ID}).(View)
+	if view.You.HintIdx != nil || view.RevealCost != 2 {
+		t.Fatalf("before paying: hint=%v cost=%d, want no hint and a cost of 2", view.You.HintIdx, view.RevealCost)
+	}
+
+	trusted := player
+	trusted.Trusted = true
+	if _, failure := g.OnAction(engine.Action{Type: ActionReveal, Payload: revealPayload(g.questionSeq)}, trusted); failure != nil {
+		t.Fatalf("trusted reveal refused: %s", failure.Code)
+	}
+	view = g.View(engine.Audience{Kind: engine.AudiencePlayer, PlayerID: ada.ID}).(View)
+	if view.You.HintIdx == nil || *view.You.HintIdx != g.current.answerIdx {
+		t.Fatal("a paid reveal must show the right answer")
+	}
+	// Paying twice for one question is refused, so it cannot be charged twice.
+	if _, failure := g.OnAction(engine.Action{Type: ActionReveal, Payload: revealPayload(g.questionSeq)}, trusted); failure == nil {
+		t.Fatal("a second reveal of the same question must be refused")
+	}
+
+	// Answered instantly, yet worth the base only: no speed bonus.
+	submit(t, g, ada, g.current.answerIdx, start+600)
+	if want := BasePoints * g.cfg.MultiplierPct() / 100; score(g, ada) != want {
+		t.Fatalf("revealed answer scored %d, want base only (%d)", score(g, ada), want)
+	}
+}
+
+func TestReveal_NotOfferedWithMoreThanOnePlayer(t *testing.T) {
+	g := newGame(t, nil)
+	g.OnTimer(timerPhase, g.deadline)
+	trusted := engine.ActionCtx{Role: engine.AudiencePlayer, Trusted: true, Actor: ada, Now: g.phaseStartedAt + 100}
+	if _, failure := g.OnAction(engine.Action{Type: ActionReveal, Payload: revealPayload(g.questionSeq)}, trusted); failure == nil {
+		t.Fatal("a reveal must never be possible against other players")
+	}
+	if cost := g.View(engine.Audience{Kind: engine.AudiencePlayer, PlayerID: ada.ID}).(View).RevealCost; cost != 0 {
+		t.Fatalf("reveal cost shown in a multiplayer game: %d", cost)
+	}
+}
+
+func TestPause_FreezesASoloClockAndDoesNotCostSpeed(t *testing.T) {
+	g, start := soloGame(t)
+	owner := func(now engine.EpochMs) engine.ActionCtx {
+		return engine.ActionCtx{Role: engine.AudiencePlayer, IsHost: true, Actor: ada, Now: now}
+	}
+	left := g.deadline - (start + 2_000)
+
+	g.OnAction(engine.Action{Type: ActionPause}, owner(start+2_000))
+	if view := g.View(engine.Audience{Kind: engine.AudiencePlayer, PlayerID: ada.ID}).(View); !view.Paused || view.PausedLeftMs != left {
+		t.Fatalf("paused=%v left=%d, want paused with %dms left", view.Paused, view.PausedLeftMs, left)
+	}
+	// A minute in the background, then back.
+	g.OnAction(engine.Action{Type: ActionResume}, owner(start+62_000))
+	if g.paused || g.deadline != start+62_000+left {
+		t.Fatalf("after resume the clock must have exactly what it had left: deadline=%d", g.deadline)
+	}
+
+	// Answering 1s after resuming counts as 3s on the clock, not 63s.
+	submit(t, g, ada, g.current.answerIdx, start+63_000)
+	if g.players[ada.ID].lastMs != 3_000 {
+		t.Fatalf("answer time = %dms, want 3000 (the pause must not count)", g.players[ada.ID].lastMs)
+	}
+}
+
+func TestPause_RefusedWhenOthersArePlaying(t *testing.T) {
+	g := newGame(t, nil)
+	if _, failure := g.OnAction(engine.Action{Type: ActionPause}, host(t0+100)); failure == nil {
+		t.Fatal("a game with more than one player must not be pausable")
+	}
+}

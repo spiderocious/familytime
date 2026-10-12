@@ -3,6 +3,9 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -53,6 +56,8 @@ func (m *memoryStore) snapshot() []results.GameResult {
 	return append([]results.GameResult{}, m.rows...)
 }
 
+const webhookSecret = "whsec-for-tests"
+
 func boot(t *testing.T) (*httptest.Server, *memoryStore) {
 	return bootWith(t, nil)
 }
@@ -72,7 +77,7 @@ func bootWith(t *testing.T, platformClient platform.Platform) (*httptest.Server,
 
 	store := &memoryStore{}
 	application := app.Build(app.Deps{
-		Env:      env.Env{AppEnv: env.EnvTest, AppURL: "http://web.test", CORSOrigins: []string{"http://web.test"}},
+		Env:      env.Env{AppEnv: env.EnvTest, AppURL: "http://web.test", CORSOrigins: []string{"http://web.test"}, VatarWebhookSecret: webhookSecret},
 		DB:       alwaysUp{},
 		Bank:     bank,
 		Results:  results.NewService(store),
@@ -434,10 +439,12 @@ func TestReconnect_PlayerKeepsSeatAndScore(t *testing.T) {
 // fakePlatform stands in for Lagos Life: it knows two sessions and one match,
 // and records the result it is sent.
 type fakePlatform struct {
-	mu       sync.Mutex
-	sessions map[string]vatar.Session
-	match    vatar.Match
-	results  []string
+	mu        sync.Mutex
+	sessions  map[string]vatar.Session
+	match     vatar.Match
+	results   []string
+	purchases map[string]vatar.Purchase
+	delivered []string
 }
 
 func (f *fakePlatform) Configured() bool { return true }
@@ -459,6 +466,23 @@ func (f *fakePlatform) PostResult(_ context.Context, match vatar.Match, winner s
 	defer f.mu.Unlock()
 	f.results = append(f.results, match.ID+"|"+match.Nonce+"|"+winner)
 	return nil
+}
+func (f *fakePlatform) GetPurchase(_ context.Context, id string) (vatar.Purchase, error) {
+	if purchase, ok := f.purchases[id]; ok {
+		return purchase, nil
+	}
+	return vatar.Purchase{}, &vatar.APIError{Status: 404, Code: "not_found"}
+}
+func (f *fakePlatform) DeliverPurchase(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.delivered = append(f.delivered, id)
+	return nil
+}
+func (f *fakePlatform) deliveries() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.delivered...)
 }
 func (f *fakePlatform) reported() []string {
 	f.mu.Lock()
@@ -672,5 +696,159 @@ func TestPlatform_DevSessionsWorkOutsideProduction(t *testing.T) {
 	}
 	if status, env := call(t, http.MethodPost, api+"/solo", `{"config":{}}`); status != 422 || len(env.Error.FieldErrors["session"]) == 0 {
 		t.Fatalf("missing session: %d %+v", status, env.Error)
+	}
+}
+
+// ---- paid answer reveals ------------------------------------------------------
+
+func TestReveal_BoughtWithGemsFromAVerifiedPurchase(t *testing.T) {
+	lagos := &fakePlatform{
+		sessions: map[string]vatar.Session{
+			"sess-ada": {PlayerID: "p_ada", Name: "Ada", Mode: "test"},
+			"sess-bem": {PlayerID: "p_bem", Name: "Bem", Mode: "test"},
+		},
+		purchases: map[string]vatar.Purchase{
+			"pur_1":      {ID: "pur_1", ProductID: "gems_10", PlayerID: "p_ada", Amount: 100, Status: vatar.PurchasePaid},
+			"pur_2":      {ID: "pur_2", ProductID: "gems_10", PlayerID: "p_ada", Amount: 100, Status: vatar.PurchasePaid},
+			"pur_refund": {ID: "pur_refund", ProductID: "gems_10", PlayerID: "p_ada", Status: vatar.PurchaseRefunded},
+			"pur_other":  {ID: "pur_other", ProductID: "mystery_box", PlayerID: "p_ada", Status: vatar.PurchasePaid},
+		},
+	}
+	server, _ := bootWith(t, lagos)
+	api := server.URL + "/api/v1/platform"
+	post := func(path, body string) (int, envelope) { return call(t, http.MethodPost, api+path, body) }
+	gems := func(env envelope) int {
+		var out struct {
+			Gems int `json:"gems"`
+		}
+		_ = json.Unmarshal(env.Data, &out)
+		return out.Gems
+	}
+
+	if status, env := post("/wallet", `{"session":"sess-ada"}`); status != 200 || gems(env) != 0 {
+		t.Fatalf("a new player starts with no gems: %d %s", status, env.Data)
+	}
+
+	// A purchase is real only when the platform says so, and only for its buyer.
+	if status, env := post("/purchases/pur_made_up/claim", `{"session":"sess-ada"}`); status != 404 || env.Error.Code != "purchase_not_found" {
+		t.Fatalf("a made-up purchase: %d %+v", status, env.Error)
+	}
+	if status, env := post("/purchases/pur_1/claim", `{"session":"sess-bem"}`); status != 404 || env.Error.Code != "purchase_not_found" {
+		t.Fatalf("someone else's purchase: %d %+v", status, env.Error)
+	}
+	if status, env := post("/purchases/pur_refund/claim", `{"session":"sess-ada"}`); status != 409 || env.Error.Code != "purchase_refunded" {
+		t.Fatalf("a refunded purchase: %d %+v", status, env.Error)
+	}
+	if status, _ := post("/purchases/pur_other/claim", `{"session":"sess-ada"}`); status != 404 {
+		t.Fatalf("a product this server does not sell: %d", status)
+	}
+	if len(lagos.deliveries()) != 0 {
+		t.Fatalf("nothing refused may be marked delivered: %v", lagos.deliveries())
+	}
+
+	if status, env := post("/purchases/pur_1/claim", `{"session":"sess-ada"}`); status != 200 || gems(env) != 10 {
+		t.Fatalf("claim: %d %s", status, env.Data)
+	}
+	// Claiming again (a reload, a retry) gives nothing more.
+	if status, env := post("/purchases/pur_1/claim", `{"session":"sess-ada"}`); status != 200 || gems(env) != 10 {
+		t.Fatalf("second claim of one purchase: %d %s", status, env.Data)
+	}
+	if got := lagos.deliveries(); len(got) != 2 || got[0] != "pur_1" {
+		t.Fatalf("delivered = %v, want pur_1 marked (repeat is harmless)", got)
+	}
+
+	// The webhook settles a purchase too, but only when it is really signed.
+	event := []byte(`{"id":"evt_1","type":"purchase.paid","mode":"test","data":{"purchaseId":"pur_2","productId":"gems_10","playerId":"p_ada","amount":100,"currency":"NGN"}}`)
+	hook := func(signature string) int {
+		req, _ := http.NewRequest(http.MethodPost, api+"/webhook", bytes.NewReader(event))
+		req.Header.Set("X-Vatar-Signature", signature)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if status := hook("sha256=" + strings.Repeat("0", 64)); status != 401 {
+		t.Fatalf("a forged webhook: %d, want 401", status)
+	}
+	mac := hmac.New(sha256.New, []byte(webhookSecret))
+	mac.Write(event)
+	if status := hook("sha256=" + hex.EncodeToString(mac.Sum(nil))); status != 204 {
+		t.Fatalf("a signed webhook: %d, want 204", status)
+	}
+	if _, env := post("/wallet", `{"session":"sess-ada"}`); gems(env) != 20 {
+		t.Fatalf("after the webhook: %s, want 20 gems", env.Data)
+	}
+
+	// A mixed solo run: the first reveal costs 2 gems.
+	status, env := post("/solo", `{"session":"sess-ada","config":{"difficulty":"mixed","seconds_per_question":20}}`)
+	var mine seat
+	_ = json.Unmarshal(env.Data, &mine)
+	if status != 201 {
+		t.Fatalf("solo start: %d %+v", status, env.Error)
+	}
+	me := dial(t, server, mine.Code, "player", mine.PlayerToken)
+	me.until("seated", func(m wsMessage) bool {
+		return m.State != nil && len(m.State.Room.Players) == 1 && m.State.Room.Players[0].Connected
+	})
+	me.send("host.start", nil)
+	asked := me.until("question", func(m wsMessage) bool { return inPhase(quiz.PhaseQuestion)(m) && m.State.Game.QuestionSeq == 1 })
+	if asked.State.Game.RevealCost != 2 || asked.State.Game.You.HintIdx != nil {
+		t.Fatalf("question 1 on mixed: cost %d, hint %v", asked.State.Game.RevealCost, asked.State.Game.You.HintIdx)
+	}
+
+	// A reveal cannot be asked for over the socket, nor for someone else's game.
+	me.send("quiz.reveal", map[string]int{"question_seq": 1})
+	if msg := me.until("refused", func(m wsMessage) bool { return m.Error != nil }); msg.Error.Code != "invalid_action" {
+		t.Fatalf("a reveal over the socket: %+v", msg.Error)
+	}
+	if status, env := post("/solo/"+mine.Code+"/reveal", `{"session":"sess-bem","question_seq":1}`); status != 403 {
+		t.Fatalf("a reveal in someone else's game: %d %+v", status, env.Error)
+	}
+
+	status, env = post("/solo/"+mine.Code+"/reveal", `{"session":"sess-ada","question_seq":1}`)
+	var shown struct {
+		AnswerIdx int `json:"answer_idx"`
+		Cost      int `json:"cost"`
+		Gems      int `json:"gems"`
+	}
+	_ = json.Unmarshal(env.Data, &shown)
+	if status != 200 || shown.Cost != 2 || shown.Gems != 18 || shown.AnswerIdx != rightIndex(asked.State.Game) {
+		t.Fatalf("reveal: %d %+v (right answer %d)", status, shown, rightIndex(asked.State.Game))
+	}
+	hinted := me.until("hint", func(m wsMessage) bool {
+		return m.State != nil && m.State.Game != nil && m.State.Game.You != nil && m.State.Game.You.HintIdx != nil
+	})
+	if *hinted.State.Game.You.HintIdx != shown.AnswerIdx {
+		t.Fatal("the hint in the game state must be the answer that was paid for")
+	}
+	// Asking twice for the same question charges once: the second is refused
+	// and its gems come straight back.
+	if status, _ := post("/solo/"+mine.Code+"/reveal", `{"session":"sess-ada","question_seq":1}`); status == 200 {
+		t.Fatal("a second reveal of one question must be refused")
+	}
+	if _, env := post("/wallet", `{"session":"sess-ada"}`); gems(env) != 18 {
+		t.Fatalf("a refused reveal must cost nothing: %s", env.Data)
+	}
+
+	me.send("quiz.answer", map[string]int{"question_seq": 1, "choice": shown.AnswerIdx})
+	revealed := me.until("reveal", func(m wsMessage) bool { return inPhase(quiz.PhaseReveal)(m) && m.State.Game.QuestionSeq == 1 })
+	if got := revealed.State.Game.You.Points; got != quiz.BasePoints {
+		t.Fatalf("a revealed answer scored %d, want the base %d and no speed bonus", got, quiz.BasePoints)
+	}
+
+	// Bem has no gems: asking is refused, and costs nothing.
+	status, env = post("/solo", `{"session":"sess-bem","config":{}}`)
+	var theirs seat
+	_ = json.Unmarshal(env.Data, &theirs)
+	bem := dial(t, server, theirs.Code, "player", theirs.PlayerToken)
+	bem.until("seated", func(m wsMessage) bool {
+		return m.State != nil && len(m.State.Room.Players) == 1 && m.State.Room.Players[0].Connected
+	})
+	bem.send("host.start", nil)
+	bem.until("question", func(m wsMessage) bool { return inPhase(quiz.PhaseQuestion)(m) && m.State.Game.QuestionSeq == 1 })
+	if status, env := post("/solo/"+theirs.Code+"/reveal", `{"session":"sess-bem","question_seq":1}`); status != 409 || env.Error.Code != "not_enough_gems" {
+		t.Fatalf("a reveal without gems: %d %+v", status, env.Error)
 	}
 }

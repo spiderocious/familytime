@@ -1,6 +1,10 @@
 package platform
 
 import (
+	"io"
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"familytime/backend/internal/lib/response"
@@ -58,4 +62,58 @@ func (ctl *controller) joinMatch(c *gin.Context) {
 		return
 	}
 	response.OK(c, res.Data)
+}
+
+func (ctl *controller) wallet(c *gin.Context) {
+	body, ok := bind(c)
+	if !ok {
+		return
+	}
+	res := ctl.service.Wallet(c.Request.Context(), body.Session)
+	if !res.OK() {
+		response.Bail(c, res.Failure)
+		return
+	}
+	response.OK(c, res.Data)
+}
+
+func (ctl *controller) claimPurchase(c *gin.Context) {
+	body, ok := bind(c)
+	if !ok {
+		return
+	}
+	res := ctl.service.ClaimPurchase(c.Request.Context(), body.Session, c.Param("purchaseId"))
+	if !res.OK() {
+		response.Bail(c, res.Failure)
+		return
+	}
+	response.OK(c, res.Data)
+}
+
+func (ctl *controller) reveal(c *gin.Context) {
+	body, ok := bind(c)
+	if !ok {
+		return
+	}
+	res := ctl.service.Reveal(c.Request.Context(), body.Session, strings.ToUpper(c.Param("code")), body.QuestionSeq)
+	if !res.OK() {
+		response.Bail(c, res.Failure)
+		return
+	}
+	response.OK(c, res.Data)
+}
+
+// webhook reads the body raw: the signature is over the exact bytes sent.
+func (ctl *controller) webhook(c *gin.Context) {
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBytes))
+	if err != nil {
+		response.Malformed(c)
+		return
+	}
+	res := ctl.service.Webhook(c.Request.Context(), raw, c.GetHeader(webhookSignatureHeader))
+	if !res.OK() {
+		response.Bail(c, res.Failure)
+		return
+	}
+	response.NoContent(c)
 }

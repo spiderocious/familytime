@@ -14,6 +14,7 @@ import (
 	"familytime/backend/internal/engine"
 	"familytime/backend/internal/features/rooms"
 	"familytime/backend/internal/features/solo"
+	"familytime/backend/internal/features/wallet"
 	"familytime/backend/internal/games/quiz"
 	"familytime/backend/internal/lib/logger"
 	"familytime/backend/internal/lib/result"
@@ -25,10 +26,14 @@ import (
 const (
 	maxNameRunes = 16
 	// A duel is started by one of its players, and never by a player alone.
-	duelMinPlayers  = 2
-	resultAttempts  = 4
-	resultRetryWait = 3 * time.Second
-	duelLinger      = 10 * time.Minute
+	duelMinPlayers = 2
+	// Except in the platform's sandbox, where its test bot can hold the other
+	// seat. The bot never connects to our room, so the lone human must be able
+	// to start, play, and have the result posted.
+	sandboxMinPlayers = 1
+	resultAttempts    = 4
+	resultRetryWait   = 3 * time.Second
+	duelLinger        = 10 * time.Minute
 )
 
 // Platform is the part of the Vatar client this service uses.
@@ -38,12 +43,15 @@ type Platform interface {
 	VerifySession(ctx context.Context, token string) (vatar.Session, error)
 	GetMatch(ctx context.Context, matchID string) (vatar.Match, error)
 	PostResult(ctx context.Context, match vatar.Match, winner string) error
+	GetPurchase(ctx context.Context, purchaseID string) (vatar.Purchase, error)
+	DeliverPurchase(ctx context.Context, purchaseID string) error
 }
 
 // Registry is the part of the engine a duel drives.
 type Registry interface {
 	Game(id string) (engine.Game, bool)
 	Create(game engine.Game, config engine.Config) *engine.Room
+	Get(code string) (*engine.Room, bool)
 }
 
 // duel is one platform match being played in one of our rooms.
@@ -59,14 +67,21 @@ type Service struct {
 	platform Platform
 	registry Registry
 	solo     *solo.Service
+	wallets  wallet.Store
+	// Signs the platform's webhooks. Empty refuses them all.
+	webhookSecret string
 
 	mu     sync.Mutex
-	duels  map[string]*duel // by platform match id
-	byRoom map[string]*duel // by our room code
+	duels  map[string]*duel   // by platform match id
+	byRoom map[string]*duel   // by our room code
+	solos  map[string]soloRun // by our room code
 }
 
-func NewService(platform Platform, registry Registry, soloService *solo.Service) *Service {
-	return &Service{platform: platform, registry: registry, solo: soloService, duels: map[string]*duel{}, byRoom: map[string]*duel{}}
+func NewService(platform Platform, registry Registry, soloService *solo.Service, wallets wallet.Store, webhookSecret string) *Service {
+	return &Service{
+		platform: platform, registry: registry, solo: soloService, wallets: wallets, webhookSecret: webhookSecret,
+		duels: map[string]*duel{}, byRoom: map[string]*duel{}, solos: map[string]soloRun{},
+	}
 }
 
 func (s *Service) Status() result.Result[StatusView] {
@@ -100,6 +115,9 @@ func (s *Service) StartSolo(ctx context.Context, token string, rawConfig json.Ra
 	if !started.OK() {
 		return result.FailWith[SeatView](started.Failure)
 	}
+	s.mu.Lock()
+	s.solos[started.Data.Code] = soloRun{platformID: session.PlayerID, playerID: started.Data.PlayerID}
+	s.mu.Unlock()
 	return result.Ok(SeatView{StartedView: started.Data, Mode: session.Mode})
 }
 
@@ -174,7 +192,11 @@ func (s *Service) openDuel(ctx context.Context, matchID string) (*duel, *result.
 	room.MakePrivate()
 	// Nothing starts on its own: the first player in the room presses Start
 	// once at least one opponent has arrived.
-	room.LetPlayersStart(duelMinPlayers)
+	minPlayers := duelMinPlayers
+	if match.Mode == vatar.ModeTest {
+		minPlayers = sandboxMinPlayers
+	}
+	room.LetPlayersStart(minPlayers)
 
 	d := &duel{match: match, room: room, seats: map[string]*engine.Player{}, platform: map[string]string{}}
 	s.duels[matchID] = d

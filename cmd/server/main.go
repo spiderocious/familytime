@@ -15,6 +15,7 @@ import (
 	"familytime/backend/internal/env"
 	"familytime/backend/internal/features/questions"
 	"familytime/backend/internal/features/results"
+	"familytime/backend/internal/features/wallet"
 	"familytime/backend/internal/lib/db"
 	"familytime/backend/internal/lib/logger"
 )
@@ -67,6 +68,7 @@ func run() error {
 		DB:      database,
 		Bank:    bank,
 		Results: results.NewService(results.NewRepo(database.DB)),
+		Wallets: wallet.NewRepo(database.DB),
 	})
 	application.Registry.StartSweeper(ctx)
 

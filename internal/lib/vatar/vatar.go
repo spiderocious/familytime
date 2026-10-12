@@ -40,6 +40,16 @@ const (
 	WinnerDraw = "draw"
 
 	MatchPlaying = "playing"
+
+	PurchasePaid      = "paid"
+	PurchaseDelivered = "delivered"
+	PurchaseRefunded  = "refunded"
+
+	// A dev purchase stands in for a real one when no secret is configured.
+	// Format: "dev_<product id>_<anything>". Never accepted in production.
+	devPurchasePrefix = "dev_"
+
+	EventPurchasePaid = "purchase.paid"
 )
 
 // Error codes Vatar returns that callers branch on.
@@ -84,6 +94,17 @@ type Match struct {
 	Winner  string        `json:"winner"`
 	Nonce   string        `json:"nonce"`
 	Mode    string        `json:"mode"`
+}
+
+// Purchase is one paid purchase in our game, as Vatar records it. Amount is in
+// naira; it is never used to decide what to give.
+type Purchase struct {
+	ID        string `json:"id"`
+	ProductID string `json:"productId"`
+	PlayerID  string `json:"playerId"`
+	Amount    int    `json:"amount"`
+	Status    string `json:"status"`
+	Mode      string `json:"mode"`
 }
 
 type Config struct {
@@ -152,6 +173,49 @@ func (c *Client) GetMatch(ctx context.Context, matchID string) (Match, error) {
 	var match Match
 	err := c.call(ctx, http.MethodGet, "/matches/"+url.PathEscape(matchID), nil, nil, &match)
 	return match, err
+}
+
+// GetPurchase asks Vatar whether a purchase is real. An unpaid, unknown or
+// other game's purchase comes back as a 404 APIError.
+func (c *Client) GetPurchase(ctx context.Context, purchaseID string) (Purchase, error) {
+	if !c.Configured() {
+		if !c.cfg.AllowDev {
+			return Purchase{}, ErrNotConfigured
+		}
+		rest, ok := strings.CutPrefix(purchaseID, devPurchasePrefix)
+		cut := strings.LastIndex(rest, "_")
+		if !ok || cut <= 0 {
+			return Purchase{}, &APIError{Status: http.StatusNotFound, Code: "not_found"}
+		}
+		return Purchase{ID: purchaseID, ProductID: rest[:cut], Status: PurchasePaid, Mode: ModeDev}, nil
+	}
+	var purchase Purchase
+	err := c.call(ctx, http.MethodGet, "/purchases/"+url.PathEscape(purchaseID), nil, nil, &purchase)
+	return purchase, err
+}
+
+// DeliverPurchase tells Vatar the item has been given. Safe to repeat.
+func (c *Client) DeliverPurchase(ctx context.Context, purchaseID string) error {
+	if !c.Configured() {
+		if c.cfg.AllowDev {
+			return nil
+		}
+		return ErrNotConfigured
+	}
+	return c.call(ctx, http.MethodPost, "/purchases/"+url.PathEscape(purchaseID)+"/deliver", map[string]string{}, nil, nil)
+}
+
+// WebhookSigned checks a webhook's X-Vatar-Signature header: "sha256=" and
+// the hex HMAC-SHA256 of the raw body, keyed with the webhook signing secret.
+// Compared in constant time. An empty secret never verifies.
+func WebhookSigned(webhookSecret string, rawBody []byte, header string) bool {
+	if webhookSecret == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(webhookSecret))
+	mac.Write(rawBody)
+	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(want), []byte(header))
 }
 
 // PostResult reports who won. winner is a Vatar player id, or WinnerDraw.
