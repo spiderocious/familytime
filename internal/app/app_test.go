@@ -120,6 +120,8 @@ type wsMessage struct {
 				Name      string `json:"name"`
 				Connected bool   `json:"connected"`
 			} `json:"players"`
+			StarterID  string `json:"starter_id"`
+			MinToStart int    `json:"min_to_start"`
 		} `json:"room"`
 		Game *quiz.View `json:"game"`
 	} `json:"state"`
@@ -604,7 +606,19 @@ func TestDuel_PlatformMatchIsPlayedAndTheWinnerReported(t *testing.T) {
 	adaWS := dial(t, server, ada.Code, "player", ada.PlayerToken)
 	bemWS := dial(t, server, bem.Code, "player", bem.PlayerToken)
 
-	// Nobody presses Start: the server begins once both are seated.
+	// Nothing starts on its own. The first player in holds the Start button;
+	// the second is refused, and so is anyone starting a duel alone.
+	lobby := bemWS.until("both seated", func(m wsMessage) bool {
+		return m.State != nil && len(m.State.Room.Players) == 2 && m.State.Room.Players[1].Connected
+	})
+	if lobby.State.Game != nil || lobby.State.Room.StarterID != ada.PlayerID || lobby.State.Room.MinToStart != 2 {
+		t.Fatalf("lobby should wait for Ada to start: starter=%q min=%d", lobby.State.Room.StarterID, lobby.State.Room.MinToStart)
+	}
+	bemWS.send("host.start", nil)
+	if msg := bemWS.until("refused", func(m wsMessage) bool { return m.Error != nil }); msg.Error.Code != "not_host" {
+		t.Fatalf("the second player started the match: %+v", msg.Error)
+	}
+	adaWS.send("host.start", nil)
 	for q := 1; q <= quiz.DuelQuestions; q++ {
 		asked := adaWS.until("question", func(m wsMessage) bool { return inPhase(quiz.PhaseQuestion)(m) && m.State.Game.QuestionSeq == q })
 		bemAsked := bemWS.until("question", func(m wsMessage) bool { return inPhase(quiz.PhaseQuestion)(m) && m.State.Game.QuestionSeq == q })

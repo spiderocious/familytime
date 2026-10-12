@@ -76,6 +76,10 @@ type Room struct {
 	// private rooms are not open to the public join endpoint; their seats are
 	// handed out by the server to players it has already identified.
 	private bool
+	// playerStart, when above zero, lets a player press Start in a room with
+	// no host screen, once this many players are seated. Which player is
+	// decided by starterID.
+	playerStart int
 
 	instance   Instance
 	instanceID string
@@ -153,15 +157,28 @@ func (r *Room) SetOwner(playerID string) {
 	r.ownerID = playerID
 }
 
-// StartNow starts the game on the server's own authority (a duel begins when
-// its players are seated, not when one of them presses a button).
-func (r *Room) StartNow() *result.Failure {
+// LetPlayersStart hands the Start button to the players of a room with no
+// host screen: the first to arrive presses it, once minPlayers are seated.
+// That is all they may do; they cannot skip, end or restart the game.
+func (r *Room) LetPlayersStart(minPlayers int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.phase == PhaseClosed {
-		return fail(constants.CodeRoomClosed, messages.RoomsClosed, constants.StatusGone)
+	r.playerStart = minPlayers
+}
+
+// starterID is the player holding the Start button: the earliest to join who
+// is still connected, so a first player who walks away does not strand the
+// rest. Empty once a game has begun, or where players do not start the room.
+func (r *Room) starterID() string {
+	if r.playerStart == 0 || r.instance != nil {
+		return ""
 	}
-	return r.start(r.deps.now())
+	for _, p := range r.players {
+		if p.conns > 0 {
+			return p.ID
+		}
+	}
+	return ""
 }
 
 // Close ends the room for everyone, on the server's own authority.
@@ -283,7 +300,17 @@ func (r *Room) Handle(audience Audience, msgType string, payload json.RawMessage
 			return notHost()
 		}
 		return r.configure(payload)
-	case ClientHostStart, ClientHostPlayAgain:
+	case ClientHostStart:
+		if !isHost {
+			if audience.PlayerID == "" || audience.PlayerID != r.starterID() {
+				return notHost()
+			}
+			if len(r.players) < r.playerStart {
+				return fail(constants.CodeNotEnoughPlayers, messages.PlayNeedOpponent, constants.StatusConflict)
+			}
+		}
+		return r.start(now)
+	case ClientHostPlayAgain:
 		if !isHost {
 			return notHost()
 		}
@@ -554,6 +581,8 @@ func (r *Room) view() RoomView {
 		Players:       players,
 		Config:        r.config,
 		Facts:         r.config.Facts(),
+		StarterID:     r.starterID(),
+		MinToStart:    r.playerStart,
 	}
 }
 

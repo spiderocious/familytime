@@ -23,8 +23,12 @@ func NewOriginPolicy(allowed []string, allowPrivateNetwork bool) OriginPolicy {
 	return OriginPolicy{allowed: allowed, allowPrivateNetwork: allowPrivateNetwork}
 }
 
+// AnyOrigin in the allowed list opens the API to every origin. Meant for
+// getting a deployment working; list the real origins once they are known.
+const AnyOrigin = "*"
+
 func (p OriginPolicy) Allows(origin string) bool {
-	if slices.Contains(p.allowed, origin) {
+	if slices.Contains(p.allowed, AnyOrigin) || slices.Contains(p.allowed, origin) {
 		return true
 	}
 	if !p.allowPrivateNetwork {

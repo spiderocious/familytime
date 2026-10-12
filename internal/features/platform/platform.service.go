@@ -24,14 +24,8 @@ import (
 
 const (
 	maxNameRunes = 16
-	// Once everyone in the match has a seat, a short beat before the first
-	// question so the last player to arrive sees the "get ready" screen.
-	startWhenFull = 1500 * time.Millisecond
-	// If someone never turns up, the match does not wait for them for ever:
-	// they simply score nothing.
-	startRegardless = 20 * time.Second
-	// A dev duel has no platform match to say how many seats there are.
-	devDuelSeats    = 2
+	// A duel is started by one of its players, and never by a player alone.
+	duelMinPlayers  = 2
 	resultAttempts  = 4
 	resultRetryWait = 3 * time.Second
 	duelLinger      = 10 * time.Minute
@@ -54,13 +48,11 @@ type Registry interface {
 
 // duel is one platform match being played in one of our rooms.
 type duel struct {
-	match    vatar.Match
-	room     *engine.Room
-	expected int
+	match vatar.Match
+	room  *engine.Room
 	// platform player id → the seat we gave them, and back again.
-	seats     map[string]*engine.Player
-	platform  map[string]string
-	startOnce sync.Once
+	seats    map[string]*engine.Player
+	platform map[string]string
 }
 
 type Service struct {
@@ -146,12 +138,6 @@ func (s *Service) JoinMatch(ctx context.Context, matchID, token string) result.R
 		}
 		d.seats[session.PlayerID] = player
 		d.platform[player.ID] = session.PlayerID
-
-		if len(d.seats) >= d.expected {
-			s.startAfter(d, startWhenFull)
-		} else if len(d.seats) == 1 {
-			s.startAfter(d, startRegardless)
-		}
 	}
 
 	return result.Ok(SeatView{
@@ -164,7 +150,6 @@ func (s *Service) JoinMatch(ctx context.Context, matchID, token string) result.R
 // with the lock held.
 func (s *Service) openDuel(ctx context.Context, matchID string) (*duel, *result.Failure) {
 	match := vatar.Match{ID: matchID, Status: vatar.MatchPlaying, Mode: vatar.ModeDev}
-	expected := devDuelSeats
 
 	if !s.platform.DevMode() {
 		fetched, err := s.platform.GetMatch(ctx, matchID)
@@ -179,7 +164,6 @@ func (s *Service) openDuel(ctx context.Context, matchID string) (*duel, *result.
 			return nil, &result.Failure{Code: constants.CodeMatchNotReady, MessageKey: messages.PlatformMatchWait, Status: constants.StatusConflict, RejectionReason: "status_" + fetched.Status}
 		}
 		match = fetched
-		expected = len(fetched.Players)
 	}
 
 	game, ok := s.registry.Game(quiz.GameID)
@@ -188,21 +172,14 @@ func (s *Service) openDuel(ctx context.Context, matchID string) (*duel, *result.
 	}
 	room := s.registry.Create(game, quiz.DuelConfig())
 	room.MakePrivate()
+	// Nothing starts on its own: the first player in the room presses Start
+	// once at least one opponent has arrived.
+	room.LetPlayersStart(duelMinPlayers)
 
-	d := &duel{match: match, room: room, expected: expected, seats: map[string]*engine.Player{}, platform: map[string]string{}}
+	d := &duel{match: match, room: room, seats: map[string]*engine.Player{}, platform: map[string]string{}}
 	s.duels[matchID] = d
 	s.byRoom[room.Code()] = d
 	return d, nil
-}
-
-func (s *Service) startAfter(d *duel, wait time.Duration) {
-	time.AfterFunc(wait, func() {
-		d.startOnce.Do(func() {
-			if failure := d.room.StartNow(); failure != nil {
-				logger.Error("duel could not start", "match_id", d.match.ID, "code", string(failure.Code))
-			}
-		})
-	})
 }
 
 // OnFinished is the engine's finished-game hook. For a duel it works out the

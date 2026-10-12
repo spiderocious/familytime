@@ -30,6 +30,7 @@ const (
 	RoomsNotHost        Key = "rooms.not_host"
 
 	PlayNotEnoughPlayers Key = "play.not_enough_players"
+	PlayNeedOpponent     Key = "play.need_opponent"
 	PlayNoQuestions      Key = "play.no_questions"
 	PlayAlreadyRunning   Key = "play.already_running"
 	PlayNoActiveGame     Key = "play.no_active_game"
@@ -73,6 +74,7 @@ var catalog = map[Key]string{
 	RoomsNotHost:        "Only the host can do that.",
 
 	PlayNotEnoughPlayers: "At least one player needs to join before the game can start.",
+	PlayNeedOpponent:     "Wait for another player to join before starting.",
 	PlayNoQuestions:      "There are no questions for those settings. Try more categories or another difficulty.",
 	PlayAlreadyRunning:   "A game is already running in this room.",
 	PlayNoActiveGame:     "There is no game running right now.",

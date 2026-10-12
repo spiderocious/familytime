@@ -67,6 +67,10 @@ type RoomView struct {
 	Players       []PlayerView `json:"players"`
 	Config        Config       `json:"config"`
 	Facts         []Fact       `json:"facts"`
+	// Set only in a lobby whose players start the game themselves: who holds
+	// the Start button, and how many must be seated before it works.
+	StarterID  string `json:"starter_id,omitempty"`
+	MinToStart int    `json:"min_to_start,omitempty"`
 }
 
 type PlayerView struct {

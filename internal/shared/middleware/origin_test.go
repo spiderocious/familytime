@@ -29,3 +29,13 @@ func TestOriginPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestOriginPolicy_AnyOrigin(t *testing.T) {
+	// Even in production, where private-network origins are not let in.
+	policy := NewOriginPolicy([]string{AnyOrigin}, false)
+	for _, origin := range []string{"https://quizzed.example.com", "https://lagoslife.app", "http://localhost:5174"} {
+		if !policy.Allows(origin) {
+			t.Fatalf("%q should be allowed when CORS_ORIGINS is *", origin)
+		}
+	}
+}
