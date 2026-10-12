@@ -22,6 +22,7 @@ const (
 	CodeRoomNotFound ErrorCode = "room_not_found"
 	CodeRoomClosed   ErrorCode = "room_closed"
 	CodeRoomFull     ErrorCode = "room_full"
+	CodeRoomPrivate  ErrorCode = "room_private"
 	CodeNameTaken    ErrorCode = "name_taken"
 	CodeInvalidToken ErrorCode = "invalid_token"
 	CodeNotHost      ErrorCode = "not_host"
@@ -32,6 +33,12 @@ const (
 	CodeGameAlreadyRunning ErrorCode = "game_already_running"
 	CodeNoActiveGame       ErrorCode = "no_active_game"
 	CodeInvalidAction      ErrorCode = "invalid_action"
+
+	// The host platform (Lagos Life)
+	CodePlatformUnavailable ErrorCode = "platform_unavailable"
+	CodeSessionInvalid      ErrorCode = "session_invalid"
+	CodeMatchNotReady       ErrorCode = "match_not_ready"
+	CodeNotInMatch          ErrorCode = "not_in_match"
 
 	// Server
 	CodeInternal ErrorCode = "internal"
@@ -50,6 +57,7 @@ const (
 	SeverityConflict             Severity = 60
 	SeverityBusinessRule         Severity = 70
 	SeverityRateLimited          Severity = 80
+	SeverityUpstream             Severity = 90
 	SeverityServerFault          Severity = 100
 )
 
@@ -66,8 +74,14 @@ var severityByCode = map[ErrorCode]Severity{
 	CodeRoomFull:   SeverityConflict,
 	CodeNameTaken:  SeverityConflict,
 
-	CodeInvalidToken: SeverityAuth,
-	CodeNotHost:      SeverityForbidden,
+	CodeInvalidToken:   SeverityAuth,
+	CodeSessionInvalid: SeverityAuth,
+	CodeRoomPrivate:    SeverityForbidden,
+	CodeNotInMatch:     SeverityForbidden,
+	CodeMatchNotReady:  SeverityConflict,
+	// The platform being down is an upstream fault, not the player's.
+	CodePlatformUnavailable: SeverityUpstream,
+	CodeNotHost:             SeverityForbidden,
 
 	CodeNotEnoughPlayers:   SeverityBusinessRule,
 	CodeNoQuestions:        SeverityBusinessRule,
@@ -100,4 +114,6 @@ const (
 	StatusUnprocessable = http.StatusUnprocessableEntity
 	StatusTooMany       = http.StatusTooManyRequests
 	StatusInternal      = http.StatusInternalServerError
+	StatusBadGateway    = http.StatusBadGateway
+	StatusUnavailable   = http.StatusServiceUnavailable
 )

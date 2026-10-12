@@ -12,8 +12,10 @@ import (
 const (
 	roomCodeLength = 5
 	// A room nobody is connected to is removed after this long.
-	roomIdleMs  = 3 * 60 * 60 * 1000
-	sweepPeriod = 5 * time.Minute
+	roomIdleMs = 3 * 60 * 60 * 1000
+	// Solo games and duels are short; their rooms are cleared much sooner.
+	privateRoomIdleMs = 15 * 60 * 1000
+	sweepPeriod       = 5 * time.Minute
 )
 
 type RegistryOptions struct {
@@ -128,8 +130,8 @@ func (g *Registry) sweep() {
 	g.mu.RLock()
 	stale := []*Room{}
 	for _, room := range g.rooms {
-		last, connected := room.idleSince()
-		if !connected && now-last > roomIdleMs {
+		last, connected, ttl := room.idleSince()
+		if !connected && now-last > ttl {
 			stale = append(stale, room)
 		}
 	}

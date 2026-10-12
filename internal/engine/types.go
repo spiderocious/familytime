@@ -101,9 +101,13 @@ type Action struct {
 }
 
 type ActionCtx struct {
-	Role  AudienceKind
-	Actor PlayerRef // zero for the host
-	Now   EpochMs
+	Role AudienceKind
+	// IsHost is true for the host screen AND for a player who owns the room
+	// (a solo game has no host screen: the one player runs it). Role stays
+	// "player" for an owner, because an owner still answers questions.
+	IsHost bool
+	Actor  PlayerRef // zero for the host
+	Now    EpochMs
 }
 
 type InitInput struct {

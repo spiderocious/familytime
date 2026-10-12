@@ -19,6 +19,13 @@ type Env struct {
 	// Where the web app lives. Join links and QR codes are built from this.
 	AppURL   string
 	LogLevel string
+
+	// The Lagos Life (Vatar) games API. With no secret set, and outside
+	// production, the server accepts stand-in dev sessions so the game can be
+	// built and tested without the platform.
+	VatarBaseURL       string
+	VatarSecret        string
+	VatarResultsSecret string
 }
 
 const (
@@ -50,6 +57,10 @@ func Load() (Env, error) {
 		MongoDB:     get("MONGODB_DB", "familytime"),
 		AppURL:      strings.TrimRight(get("APP_URL", "http://localhost:5173"), "/"),
 		LogLevel:    get("LOG_LEVEL", "info"),
+
+		VatarBaseURL:       get("VATAR_API_BASE", ""),
+		VatarSecret:        get("VATAR_SECRET", ""),
+		VatarResultsSecret: get("VATAR_RESULTS_SECRET", ""),
 	}
 	if e.MongoURI == "" || e.MongoDB == "" {
 		return Env{}, fmt.Errorf("MONGODB_URI and MONGODB_DB are required")

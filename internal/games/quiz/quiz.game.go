@@ -31,6 +31,42 @@ type Game struct {
 
 func NewGame(content Content) *Game { return &Game{content: content} }
 
+// Questions in a solo run. Fixed, so every solo score is out of the same
+// number of questions and the leaderboard compares like with like.
+const SoloQuestions = 10
+
+// SoloConfig turns a player's choices into a solo game: one quick round of a
+// fixed length. Only difficulty, topics and the clock are the player's to set.
+func SoloConfig(chosen engine.Config) engine.Config {
+	cfg, ok := chosen.(Config)
+	if !ok {
+		cfg = defaultConfig()
+	}
+	cfg.Rounds = 1
+	cfg.QuestionsPerRound = SoloQuestions
+	cfg.Endless = false
+	cfg.Pacing = PacingAuto
+	cfg.Quick = true
+	return cfg
+}
+
+// Questions and seconds in a duel. Fixed and the same for everyone: a staked
+// match must be the same contest whoever creates it.
+const (
+	DuelQuestions = 7
+	DuelSeconds   = 12
+)
+
+// DuelConfig is the one configuration every duel is played under.
+func DuelConfig() engine.Config {
+	cfg := defaultConfig()
+	cfg.Rounds = 1
+	cfg.QuestionsPerRound = DuelQuestions
+	cfg.SecondsPerQuestion = DuelSeconds
+	cfg.Quick = true
+	return cfg
+}
+
 func (g *Game) Manifest() engine.Manifest {
 	return engine.Manifest{
 		ID:         GameID,
@@ -103,5 +139,5 @@ func (g *Game) New(input engine.InitInput) (engine.Instance, []engine.Effect) {
 	}
 	inst.syncRoster(input.Roster)
 
-	return inst, inst.enter(PhaseIntro, input.Now, introMs)
+	return inst, inst.enter(PhaseIntro, input.Now, inst.tempo(introMs, quickIntroMs))
 }

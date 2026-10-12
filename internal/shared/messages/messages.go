@@ -15,12 +15,19 @@ const (
 
 	GamesNotFound Key = "games.not_found"
 
-	RoomsNotFound     Key = "rooms.not_found"
-	RoomsClosed       Key = "rooms.closed"
-	RoomsFull         Key = "rooms.full"
-	RoomsNameTaken    Key = "rooms.name_taken"
-	RoomsInvalidToken Key = "rooms.invalid_token"
-	RoomsNotHost      Key = "rooms.not_host"
+	RoomsNotFound Key = "rooms.not_found"
+	RoomsClosed   Key = "rooms.closed"
+	RoomsFull     Key = "rooms.full"
+	RoomsPrivate  Key = "rooms.private"
+
+	PlatformUnavailable Key = "platform.unavailable"
+	PlatformSession     Key = "platform.session_invalid"
+	PlatformMatchWait   Key = "platform.match_not_ready"
+	PlatformNotInMatch  Key = "platform.not_in_match"
+	FieldSessionMissing Key = "field.session_required"
+	RoomsNameTaken      Key = "rooms.name_taken"
+	RoomsInvalidToken   Key = "rooms.invalid_token"
+	RoomsNotHost        Key = "rooms.not_host"
 
 	PlayNotEnoughPlayers Key = "play.not_enough_players"
 	PlayNoQuestions      Key = "play.no_questions"
@@ -51,12 +58,19 @@ var catalog = map[Key]string{
 
 	GamesNotFound: "That game does not exist.",
 
-	RoomsNotFound:     "No game was found with that code. Check the code on the big screen.",
-	RoomsClosed:       "That game has ended.",
-	RoomsFull:         "That game is full.",
-	RoomsNameTaken:    "Someone in this game already has that name. Pick another.",
-	RoomsInvalidToken: "Your place in this game could not be confirmed. Join again.",
-	RoomsNotHost:      "Only the host can do that.",
+	RoomsNotFound: "No game was found with that code. Check the code on the big screen.",
+	RoomsClosed:   "That game has ended.",
+	RoomsFull:     "That game is full.",
+	RoomsPrivate:  "That game is not open for joining.",
+
+	PlatformUnavailable: "We could not reach Lagos Life just now. Please try again in a moment.",
+	PlatformSession:     "Your Lagos Life session has expired. Close the game and open it again.",
+	PlatformMatchWait:   "That match has not started yet.",
+	PlatformNotInMatch:  "You are not one of the players in that match.",
+	FieldSessionMissing: "A session is required.",
+	RoomsNameTaken:      "Someone in this game already has that name. Pick another.",
+	RoomsInvalidToken:   "Your place in this game could not be confirmed. Join again.",
+	RoomsNotHost:        "Only the host can do that.",
 
 	PlayNotEnoughPlayers: "At least one player needs to join before the game can start.",
 	PlayNoQuestions:      "There are no questions for those settings. Try more categories or another difficulty.",
@@ -78,23 +92,28 @@ var catalog = map[Key]string{
 }
 
 var defaultByCode = map[constants.ErrorCode]Key{
-	constants.CodeValidation:         CommonValidation,
-	constants.CodeMalformedJSON:      CommonMalformedJSON,
-	constants.CodeRateLimited:        CommonRateLimited,
-	constants.CodeNotFound:           CommonNotFound,
-	constants.CodeGameNotFound:       GamesNotFound,
-	constants.CodeRoomNotFound:       RoomsNotFound,
-	constants.CodeRoomClosed:         RoomsClosed,
-	constants.CodeRoomFull:           RoomsFull,
-	constants.CodeNameTaken:          RoomsNameTaken,
-	constants.CodeInvalidToken:       RoomsInvalidToken,
-	constants.CodeNotHost:            RoomsNotHost,
-	constants.CodeNotEnoughPlayers:   PlayNotEnoughPlayers,
-	constants.CodeNoQuestions:        PlayNoQuestions,
-	constants.CodeGameAlreadyRunning: PlayAlreadyRunning,
-	constants.CodeNoActiveGame:       PlayNoActiveGame,
-	constants.CodeInvalidAction:      PlayInvalidAction,
-	constants.CodeInternal:           CommonInternal,
+	constants.CodeValidation:          CommonValidation,
+	constants.CodeMalformedJSON:       CommonMalformedJSON,
+	constants.CodeRateLimited:         CommonRateLimited,
+	constants.CodeNotFound:            CommonNotFound,
+	constants.CodeGameNotFound:        GamesNotFound,
+	constants.CodeRoomNotFound:        RoomsNotFound,
+	constants.CodeRoomClosed:          RoomsClosed,
+	constants.CodeRoomFull:            RoomsFull,
+	constants.CodeRoomPrivate:         RoomsPrivate,
+	constants.CodePlatformUnavailable: PlatformUnavailable,
+	constants.CodeSessionInvalid:      PlatformSession,
+	constants.CodeMatchNotReady:       PlatformMatchWait,
+	constants.CodeNotInMatch:          PlatformNotInMatch,
+	constants.CodeNameTaken:           RoomsNameTaken,
+	constants.CodeInvalidToken:        RoomsInvalidToken,
+	constants.CodeNotHost:             RoomsNotHost,
+	constants.CodeNotEnoughPlayers:    PlayNotEnoughPlayers,
+	constants.CodeNoQuestions:         PlayNoQuestions,
+	constants.CodeGameAlreadyRunning:  PlayAlreadyRunning,
+	constants.CodeNoActiveGame:        PlayNoActiveGame,
+	constants.CodeInvalidAction:       PlayInvalidAction,
+	constants.CodeInternal:            CommonInternal,
 }
 
 // Resolve returns the text for a key. An unknown key falls back to the generic

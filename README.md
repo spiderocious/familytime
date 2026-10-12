@@ -134,3 +134,33 @@ every question the marked answer is true and all three wrong answers are false.
 
 Nigerian History and Nigerian Governance are hand-written, in
 `seeds/questions/`, and load with `go run ./cmd/seed` like the original ten.
+
+## Solo mode and Lagos Life
+
+One phone, no big screen. Two more ways to play, both on the same engine:
+
+| Method | Path | |
+|---|---|---|
+| POST | `/api/v1/solo` | standalone solo: `{ name, avatar?, config }` → a seat |
+| GET | `/api/v1/platform/status` | is the server on real Lagos Life keys, or accepting dev sessions? |
+| POST | `/api/v1/platform/solo` | Lagos Life solo: `{ session, config }` → a seat |
+| POST | `/api/v1/platform/matches/:matchId/join` | Lagos Life duel: `{ session }` → this player's seat in the match's room |
+
+- **A solo room** is private and owned by its one player, who may send the
+  host messages (`host.start`, `host.play_again`). A run is always one quick
+  round of ten questions; the player chooses only difficulty, topics and the clock.
+- **A duel** is a Lagos Life match (2–4 players). The room is created when the
+  first player arrives, the game starts by itself once everyone is seated (or
+  after 20 seconds), and when it ends the server reports the winner to Lagos
+  Life with a signed request — `internal/lib/vatar`. A tie for first is reported
+  as a draw, which refunds every stake.
+- **Scores scale with the settings**: Easy 80%, Mixed 100%, Medium 110%, Hard
+  130%, multiplied by the clock (30s 90%, 20s 100%, 15s 110%, 10s 120%).
+- **Identity is never taken from the request.** A platform player is whoever
+  Lagos Life says the session token belongs to; who may sit in a duel is
+  decided by Lagos Life's own record of the match.
+- **Without `VATAR_SECRET`, outside production,** the server accepts stand-in
+  `dev:<id>:<name>` sessions so the game can be built and tested off-platform.
+  In production with no secret, the platform endpoints answer 503.
+
+Not built: purchases. The game sells nothing.

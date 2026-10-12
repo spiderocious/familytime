@@ -70,6 +70,13 @@ type Room struct {
 	subs      map[string]*Subscriber
 	hostConns int
 
+	// ownerID names a player who may do what the host screen does. Set for
+	// rooms with no host screen: a solo game, or a duel run by the server.
+	ownerID string
+	// private rooms are not open to the public join endpoint; their seats are
+	// handed out by the server to players it has already identified.
+	private bool
+
 	instance   Instance
 	instanceID string
 	startedAt  EpochMs
@@ -116,7 +123,7 @@ func (r *Room) Info() RoomInfo {
 		GameTitle:   manifest.Title,
 		PlayerCount: len(r.players),
 		MaxPlayers:  manifest.MaxPlayers,
-		Joinable:    r.phase != PhaseClosed && len(r.players) < manifest.MaxPlayers,
+		Joinable:    !r.private && r.phase != PhaseClosed && len(r.players) < manifest.MaxPlayers,
 	}
 }
 
@@ -124,11 +131,57 @@ func (r *Room) Info() RoomInfo {
 // into the room should be able to pick up a phone and play from the next
 // question.
 func (r *Room) AddPlayer(name, avatar string) (*Player, *result.Failure) {
+	return r.seat(name, avatar, false)
+}
+
+// Seat adds a player the server has already identified, to a private room.
+func (r *Room) Seat(name, avatar string) (*Player, *result.Failure) {
+	return r.seat(name, avatar, true)
+}
+
+// MakePrivate closes the room to the public join endpoint.
+func (r *Room) MakePrivate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.private = true
+}
+
+// SetOwner lets one player run the room as the host screen would.
+func (r *Room) SetOwner(playerID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ownerID = playerID
+}
+
+// StartNow starts the game on the server's own authority (a duel begins when
+// its players are seated, not when one of them presses a button).
+func (r *Room) StartNow() *result.Failure {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.phase == PhaseClosed {
+		return fail(constants.CodeRoomClosed, messages.RoomsClosed, constants.StatusGone)
+	}
+	return r.start(r.deps.now())
+}
+
+// Close ends the room for everyone, on the server's own authority.
+func (r *Room) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.phase != PhaseClosed {
+		r.close()
+	}
+}
+
+func (r *Room) seat(name, avatar string, trusted bool) (*Player, *result.Failure) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.phase == PhaseClosed {
 		return nil, fail(constants.CodeRoomClosed, messages.RoomsClosed, constants.StatusGone)
+	}
+	if r.private && !trusted {
+		return nil, fail(constants.CodeRoomPrivate, messages.RoomsPrivate, constants.StatusForbidden)
 	}
 	if len(r.players) >= r.game.Manifest().MaxPlayers {
 		return nil, fail(constants.CodeRoomFull, messages.RoomsFull, constants.StatusConflict)
@@ -222,7 +275,7 @@ func (r *Room) Handle(audience Audience, msgType string, payload json.RawMessage
 	}
 	now := r.deps.now()
 	r.lastActivity = now
-	isHost := audience.Kind == AudienceHost
+	isHost := audience.Kind == AudienceHost || (r.ownerID != "" && audience.PlayerID == r.ownerID)
 
 	switch msgType {
 	case ClientHostConfigure:
@@ -256,7 +309,7 @@ func (r *Room) Handle(audience Audience, msgType string, payload json.RawMessage
 	if r.instance == nil {
 		return fail(constants.CodeNoActiveGame, messages.PlayNoActiveGame, constants.StatusConflict)
 	}
-	ctx := ActionCtx{Role: audience.Kind, Now: now}
+	ctx := ActionCtx{Role: audience.Kind, IsHost: isHost, Now: now}
 	if p := r.findPlayer(audience.PlayerID); p != nil {
 		ctx.Actor = p.ref()
 	}
@@ -504,11 +557,17 @@ func (r *Room) view() RoomView {
 	}
 }
 
-// idleSince reports the last activity and whether anyone is still connected.
-func (r *Room) idleSince() (EpochMs, bool) {
+// idleSince reports the last activity, whether anyone is still connected, and
+// how long the room may sit empty. A private room is one person's game or one
+// duel: once they have gone there is nobody to come back to it.
+func (r *Room) idleSince() (EpochMs, bool, EpochMs) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.lastActivity, len(r.subs) > 0
+	ttl := EpochMs(roomIdleMs)
+	if r.private {
+		ttl = privateRoomIdleMs
+	}
+	return r.lastActivity, len(r.subs) > 0, ttl
 }
 
 // ErrorEnvelope builds the server.error message for a failure.

@@ -53,6 +53,36 @@ type Config struct {
 	Endless            bool   `json:"endless"`
 	SecondsPerQuestion int    `json:"seconds_per_question"`
 	Pacing             Pacing `json:"pacing"`
+	// Quick is the tempo for one phone with no big screen: shorter pauses and
+	// no separate scoreboard between questions. Solo games and duels use it.
+	Quick bool `json:"quick"`
+}
+
+// Score multipliers, in percent. Harder settings pay more, easier ones less,
+// so a score earned on Easy with a long clock is worth less than the same
+// answers on Hard against a short one. The defaults (Mixed, 20s) are 100%.
+var difficultyPct = map[string]int{"easy": 80, DifficultyMixed: 100, "medium": 110, "hard": 130}
+
+func timerPct(seconds int) int {
+	switch {
+	case seconds <= 10:
+		return 120
+	case seconds <= 15:
+		return 110
+	case seconds <= 20:
+		return 100
+	default:
+		return 90
+	}
+}
+
+// MultiplierPct is what every point this configuration earns is scaled by.
+func (c Config) MultiplierPct() int {
+	pct, ok := difficultyPct[c.Difficulty]
+	if !ok {
+		pct = 100
+	}
+	return pct * timerPct(c.SecondsPerQuestion) / 100
 }
 
 func defaultConfig() Config {

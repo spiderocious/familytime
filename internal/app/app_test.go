@@ -16,9 +16,11 @@ import (
 
 	"familytime/backend/internal/app"
 	"familytime/backend/internal/env"
+	"familytime/backend/internal/features/platform"
 	"familytime/backend/internal/features/questions"
 	"familytime/backend/internal/features/results"
 	"familytime/backend/internal/games/quiz"
+	"familytime/backend/internal/lib/vatar"
 )
 
 // ---- harness ---------------------------------------------------------------
@@ -52,6 +54,10 @@ func (m *memoryStore) snapshot() []results.GameResult {
 }
 
 func boot(t *testing.T) (*httptest.Server, *memoryStore) {
+	return bootWith(t, nil)
+}
+
+func bootWith(t *testing.T, platformClient platform.Platform) (*httptest.Server, *memoryStore) {
 	t.Helper()
 	bank := questions.NewBank()
 	all := []questions.Question{}
@@ -66,10 +72,11 @@ func boot(t *testing.T) (*httptest.Server, *memoryStore) {
 
 	store := &memoryStore{}
 	application := app.Build(app.Deps{
-		Env:     env.Env{AppEnv: env.EnvTest, AppURL: "http://web.test", CORSOrigins: []string{"http://web.test"}},
-		DB:      alwaysUp{},
-		Bank:    bank,
-		Results: results.NewService(store),
+		Env:      env.Env{AppEnv: env.EnvTest, AppURL: "http://web.test", CORSOrigins: []string{"http://web.test"}},
+		DB:       alwaysUp{},
+		Bank:     bank,
+		Results:  results.NewService(store),
+		Platform: platformClient,
 	})
 	server := httptest.NewServer(application.Engine)
 	t.Cleanup(server.Close)
@@ -417,5 +424,239 @@ func TestReconnect_PlayerKeepsSeatAndScore(t *testing.T) {
 	resumed := back.until("state on reconnect", func(m wsMessage) bool { return m.State != nil && m.State.Game != nil })
 	if resumed.State.Game.Phase != quiz.PhaseReveal || resumed.State.Game.You.Score != before {
 		t.Fatalf("after reconnect: phase=%s score=%d, want reveal and %d", resumed.State.Game.Phase, resumed.State.Game.You.Score, before)
+	}
+}
+
+// ---- solo and Lagos Life duels -----------------------------------------------
+
+// fakePlatform stands in for Lagos Life: it knows two sessions and one match,
+// and records the result it is sent.
+type fakePlatform struct {
+	mu       sync.Mutex
+	sessions map[string]vatar.Session
+	match    vatar.Match
+	results  []string
+}
+
+func (f *fakePlatform) Configured() bool { return true }
+func (f *fakePlatform) DevMode() bool    { return false }
+func (f *fakePlatform) VerifySession(_ context.Context, token string) (vatar.Session, error) {
+	if session, ok := f.sessions[token]; ok {
+		return session, nil
+	}
+	return vatar.Session{}, vatar.ErrInvalidSession
+}
+func (f *fakePlatform) GetMatch(_ context.Context, id string) (vatar.Match, error) {
+	if id != f.match.ID {
+		return vatar.Match{}, &vatar.APIError{Status: 404, Code: "not_found"}
+	}
+	return f.match, nil
+}
+func (f *fakePlatform) PostResult(_ context.Context, match vatar.Match, winner string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.results = append(f.results, match.ID+"|"+match.Nonce+"|"+winner)
+	return nil
+}
+func (f *fakePlatform) reported() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.results...)
+}
+
+type seat struct {
+	Code        string `json:"code"`
+	PlayerID    string `json:"player_id"`
+	PlayerToken string `json:"player_token"`
+	Name        string `json:"name"`
+}
+
+func TestSolo_OnePlayerOwnsAndPlaysAQuickRun(t *testing.T) {
+	server, _ := boot(t)
+	api := server.URL + "/api/v1"
+
+	// Easy questions on a 10-second clock: 80% x 120% = 96% of the usual points.
+	// The player asks for 5 rounds of 30; a solo run is one round of ten regardless.
+	status, env := call(t, http.MethodPost, api+"/solo", `{"name":"Ada","config":{"difficulty":"easy","seconds_per_question":10,"rounds":5,"questions_per_round":30,"pacing":"host"}}`)
+	var mine seat
+	_ = json.Unmarshal(env.Data, &mine)
+	if status != 201 || mine.PlayerToken == "" {
+		t.Fatalf("solo start: %d %+v", status, env.Error)
+	}
+
+	// The room is one person's game: nobody else can walk in.
+	if status, env := call(t, http.MethodPost, api+"/rooms/"+mine.Code+"/players", `{"name":"Intruder"}`); status != 403 || env.Error.Code != "room_private" {
+		t.Fatalf("public join to a solo room: %d %+v", status, env.Error)
+	}
+	if status, env := call(t, http.MethodGet, api+"/rooms/"+mine.Code, ""); status != 200 || strings.Contains(string(env.Data), `"joinable":true`) {
+		t.Fatalf("a solo room must not advertise itself as joinable: %s", env.Data)
+	}
+
+	me := dial(t, server, mine.Code, "player", mine.PlayerToken)
+	me.until("seated", func(m wsMessage) bool {
+		return m.State != nil && len(m.State.Room.Players) == 1 && m.State.Room.Players[0].Connected
+	})
+	// There is no host screen; the owner starts their own game.
+	me.send("host.start", nil)
+
+	total := 0
+	for q := 1; q <= quiz.SoloQuestions; q++ {
+		asked := me.until("question", func(m wsMessage) bool { return inPhase(quiz.PhaseQuestion)(m) && m.State.Game.QuestionSeq == q })
+		game := asked.State.Game
+		if !game.Quick || game.TotalRounds != 1 || game.QuestionsPerRound != quiz.SoloQuestions || game.MultiplierPct != 96 {
+			t.Fatalf("solo shape = quick:%v rounds:%d per:%d multiplier:%d", game.Quick, game.TotalRounds, game.QuestionsPerRound, game.MultiplierPct)
+		}
+		me.send("quiz.answer", map[string]int{"question_seq": q, "choice": rightIndex(game)})
+		revealed := me.until("reveal", func(m wsMessage) bool { return inPhase(quiz.PhaseReveal)(m) && m.State.Game.QuestionSeq == q })
+		if revealed.State.Game.You.Points < quiz.BasePoints*96/100 {
+			t.Fatalf("q%d points = %d", q, revealed.State.Game.You.Points)
+		}
+		total += revealed.State.Game.You.Points
+		// Quick tempo: the reveal moves on by itself, straight to the next
+		// question — never through a separate scoreboard.
+	}
+
+	finished := me.until("finished", func(m wsMessage) bool {
+		if m.State != nil && m.State.Game != nil && m.State.Game.Phase == quiz.PhaseLeaderboard {
+			t.Fatal("a quick game must not show a separate scoreboard")
+		}
+		return inPhase(quiz.PhaseFinished)(m)
+	})
+	final := finished.State.Game.Final
+	if final.TotalQuestions != quiz.SoloQuestions || final.Stats[0].Correct != quiz.SoloQuestions || final.Stats[0].Score != total {
+		t.Fatalf("final = %+v, want %d right and %d points", final.Stats[0], quiz.SoloQuestions, total)
+	}
+
+	// The owner can go again without a host.
+	me.send("host.play_again", nil)
+	me.until("second run", inPhase(quiz.PhaseIntro))
+}
+
+func TestMultiplier_HarderSettingsPayMore(t *testing.T) {
+	cases := []struct {
+		difficulty string
+		seconds    int
+		want       int
+	}{
+		{"mixed", 20, 100}, // the defaults are the baseline
+		{"easy", 30, 72},   // easiest questions, longest clock: least
+		{"easy", 20, 80},
+		{"medium", 15, 121},
+		{"hard", 20, 130},
+		{"hard", 10, 156}, // hardest questions, shortest clock: most
+	}
+	for _, tc := range cases {
+		raw := fmt.Sprintf(`{"difficulty":%q,"seconds_per_question":%d}`, tc.difficulty, tc.seconds)
+		parsed, errs := quiz.NewGame(questions.NewBank()).ParseConfig(json.RawMessage(raw))
+		if len(errs) > 0 {
+			t.Fatalf("%s: %v", raw, errs)
+		}
+		if got := parsed.(quiz.Config).MultiplierPct(); got != tc.want {
+			t.Errorf("%s at %ds = %d%%, want %d%%", tc.difficulty, tc.seconds, got, tc.want)
+		}
+	}
+}
+
+func TestDuel_PlatformMatchIsPlayedAndTheWinnerReported(t *testing.T) {
+	lagos := &fakePlatform{
+		sessions: map[string]vatar.Session{
+			"sess-ada": {PlayerID: "p_ada", Name: "Ada", Mode: "test"},
+			"sess-bem": {PlayerID: "p_bem", Name: "Ada", Mode: "test"}, // same display name on purpose
+			"sess-cy":  {PlayerID: "p_cy", Name: "Cy", Mode: "test"},
+		},
+		match: vatar.Match{ID: "m_1", Status: vatar.MatchPlaying, Nonce: "nonce-1", Stake: 500,
+			Players: []vatar.MatchPlayer{{PlayerID: "p_ada", Name: "Ada"}, {PlayerID: "p_bem", Name: "Ada"}}},
+	}
+	server, _ := bootWith(t, lagos)
+	api := server.URL + "/api/v1/platform"
+
+	join := func(session string) (int, envelope, seat) {
+		status, env := call(t, http.MethodPost, api+"/matches/m_1/join", fmt.Sprintf(`{"session":%q}`, session))
+		var s seat
+		_ = json.Unmarshal(env.Data, &s)
+		return status, env, s
+	}
+
+	// Who may sit is decided by the platform's record, not by asking nicely.
+	if status, env, _ := join("forged"); status != 401 || env.Error.Code != "session_invalid" {
+		t.Fatalf("forged session: %d %+v", status, env.Error)
+	}
+	if status, env, _ := join("sess-cy"); status != 403 || env.Error.Code != "not_in_match" {
+		t.Fatalf("a player outside the match: %d %+v", status, env.Error)
+	}
+	if status, env := call(t, http.MethodPost, api+"/matches/m_other/join", `{"session":"sess-ada"}`); status != 502 || env.Error.Code != "platform_unavailable" {
+		t.Fatalf("unknown match: %d %+v", status, env.Error)
+	}
+
+	status, _, ada := join("sess-ada")
+	if status != 200 || ada.PlayerToken == "" {
+		t.Fatalf("ada join: %d", status)
+	}
+	// Joining twice (a refresh) returns the same seat, not a second one.
+	if _, _, again := join("sess-ada"); again.PlayerToken != ada.PlayerToken {
+		t.Fatal("a rejoin must return the same seat")
+	}
+	_, _, bem := join("sess-bem")
+	if bem.Code != ada.Code || bem.Name == ada.Name {
+		t.Fatalf("both players share one room and keep distinct names: %+v / %+v", ada, bem)
+	}
+
+	adaWS := dial(t, server, ada.Code, "player", ada.PlayerToken)
+	bemWS := dial(t, server, bem.Code, "player", bem.PlayerToken)
+
+	// Nobody presses Start: the server begins once both are seated.
+	for q := 1; q <= quiz.DuelQuestions; q++ {
+		asked := adaWS.until("question", func(m wsMessage) bool { return inPhase(quiz.PhaseQuestion)(m) && m.State.Game.QuestionSeq == q })
+		bemAsked := bemWS.until("question", func(m wsMessage) bool { return inPhase(quiz.PhaseQuestion)(m) && m.State.Game.QuestionSeq == q })
+		// A player in a duel is not its owner and cannot skip or end it.
+		if q == 1 {
+			bemWS.send("host.end_game", nil)
+			if msg := bemWS.until("refused", func(m wsMessage) bool { return m.Error != nil }); msg.Error.Code != "not_host" {
+				t.Fatalf("a duellist ended the match: %+v", msg.Error)
+			}
+		}
+		adaWS.send("quiz.answer", map[string]int{"question_seq": q, "choice": rightIndex(asked.State.Game)})
+		bemWS.send("quiz.answer", map[string]int{"question_seq": q, "choice": (rightIndex(bemAsked.State.Game) + 1) % 4})
+	}
+	adaWS.until("finished", inPhase(quiz.PhaseFinished))
+
+	var reported []string
+	for i := 0; i < 100 && len(reported) == 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+		reported = lagos.reported()
+	}
+	if len(reported) != 1 || reported[0] != "m_1|nonce-1|p_ada" {
+		t.Fatalf("reported = %v, want Ada as the winner of m_1 with its nonce", reported)
+	}
+}
+
+func TestDuel_NotStartedUntilThePlatformSaysPlaying(t *testing.T) {
+	lagos := &fakePlatform{
+		sessions: map[string]vatar.Session{"sess-ada": {PlayerID: "p_ada", Name: "Ada"}},
+		match:    vatar.Match{ID: "m_2", Status: "open", Players: []vatar.MatchPlayer{{PlayerID: "p_ada"}}},
+	}
+	server, _ := bootWith(t, lagos)
+	status, env := call(t, http.MethodPost, server.URL+"/api/v1/platform/matches/m_2/join", `{"session":"sess-ada"}`)
+	if status != 409 || env.Error.Code != "match_not_ready" {
+		t.Fatalf("an open match must not be playable yet: %d %+v", status, env.Error)
+	}
+}
+
+func TestPlatform_DevSessionsWorkOutsideProduction(t *testing.T) {
+	server, _ := boot(t) // no secret configured, test environment
+	api := server.URL + "/api/v1/platform"
+
+	status, env := call(t, http.MethodGet, api+"/status", "")
+	if status != 200 || !strings.Contains(string(env.Data), `"dev_mode":true`) {
+		t.Fatalf("status = %d %s", status, env.Data)
+	}
+	status, env = call(t, http.MethodPost, api+"/solo", `{"session":"dev:abc:Tunde","config":{}}`)
+	var mine seat
+	_ = json.Unmarshal(env.Data, &mine)
+	if status != 201 || mine.Name != "Tunde" {
+		t.Fatalf("dev solo: %d %+v %+v", status, env.Error, mine)
+	}
+	if status, env := call(t, http.MethodPost, api+"/solo", `{"config":{}}`); status != 422 || len(env.Error.FieldErrors["session"]) == 0 {
+		t.Fatalf("missing session: %d %+v", status, env.Error)
 	}
 }

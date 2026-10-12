@@ -129,13 +129,13 @@ func invalidAction() *result.Failure {
 func (g *instance) OnAction(action engine.Action, ctx engine.ActionCtx) ([]engine.Effect, *result.Failure) {
 	switch action.Type {
 	case ActionNext:
-		if ctx.Role != engine.AudienceHost {
+		if !ctx.IsHost {
 			return nil, &result.Failure{Code: constants.CodeNotHost, MessageKey: messages.RoomsNotHost, Status: constants.StatusForbidden}
 		}
 		return g.advance(ctx.Now), nil
 
 	case ActionEndGame:
-		if ctx.Role != engine.AudienceHost {
+		if !ctx.IsHost {
 			return nil, &result.Failure{Code: constants.CodeNotHost, MessageKey: messages.RoomsNotHost, Status: constants.StatusForbidden}
 		}
 		return g.finish(ctx.Now), nil
@@ -199,9 +199,19 @@ func (g *instance) advance(now engine.EpochMs) []engine.Effect {
 	case PhaseQuestion:
 		return g.closeQuestion(now)
 	case PhaseReveal:
+		lastRound := !g.cfg.Endless && g.round >= g.cfg.Rounds
 		if g.questionInRnd >= g.cfg.QuestionsPerRound {
 			g.roundsPlayed = g.round
-			return g.enter(PhaseRoundEnd, now, g.paced(roundEndMs))
+			if g.cfg.Quick && lastRound {
+				// On one phone there is nothing to gain from a "round done"
+				// screen straight before the final one.
+				return g.finish(now)
+			}
+			return g.enter(PhaseRoundEnd, now, g.paced(g.tempo(roundEndMs, quickRoundEndMs)))
+		}
+		if g.cfg.Quick {
+			// The standings ride along on the reveal; no separate scoreboard.
+			return g.ask(now)
 		}
 		return g.enter(PhaseLeaderboard, now, g.paced(leaderboardMs))
 	case PhaseRoundEnd:
@@ -213,9 +223,17 @@ func (g *instance) advance(now engine.EpochMs) []engine.Effect {
 		for _, p := range g.players {
 			p.roundScore = 0
 		}
-		return g.enter(PhaseIntro, now, introMs)
+		return g.enter(PhaseIntro, now, g.tempo(introMs, quickIntroMs))
 	}
 	return nil
+}
+
+// tempo picks the party length or the quick one.
+func (g *instance) tempo(party, quick int64) int64 {
+	if g.cfg.Quick {
+		return quick
+	}
+	return party
 }
 
 func (g *instance) ask(now engine.EpochMs) []engine.Effect {
@@ -302,7 +320,7 @@ func (g *instance) closeQuestion(now engine.EpochMs) []engine.Effect {
 		p.bestStreak = max(p.bestStreak, p.streak)
 		p.correct++
 		p.correctMs += elapsed
-		p.lastDelta = pointsFor(elapsed, windowMs, p.streak)
+		p.lastDelta = pointsFor(elapsed, windowMs, p.streak) * g.cfg.MultiplierPct() / 100
 		p.score += p.lastDelta
 		p.roundScore += p.lastDelta
 		p.lastResult = ResultCorrect
@@ -314,7 +332,7 @@ func (g *instance) closeQuestion(now engine.EpochMs) []engine.Effect {
 
 	g.questionsAsked++
 	g.reveal = &RevealView{AnswerIdx: g.current.answerIdx, Counts: counts, Fastest: fastest}
-	return g.enter(PhaseReveal, now, g.paced(revealMs))
+	return g.enter(PhaseReveal, now, g.paced(g.tempo(revealMs, quickRevealMs)))
 }
 
 func (g *instance) finish(now engine.EpochMs) []engine.Effect {
@@ -391,6 +409,8 @@ func (g *instance) View(audience engine.Audience) engine.View {
 		QuestionsPerRound: g.cfg.QuestionsPerRound,
 		QuestionSeq:       g.questionSeq,
 		QuestionsAsked:    g.questionsAsked,
+		MultiplierPct:     g.cfg.MultiplierPct(),
+		Quick:             g.cfg.Quick,
 		PhaseStartedAt:    g.phaseStartedAt,
 		Deadline:          g.deadline,
 		AnsweredIDs:       []string{},

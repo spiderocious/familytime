@@ -9,11 +9,14 @@ import (
 	"familytime/backend/internal/env"
 	"familytime/backend/internal/features/catalogue"
 	"familytime/backend/internal/features/health"
+	"familytime/backend/internal/features/platform"
 	"familytime/backend/internal/features/questions"
 	"familytime/backend/internal/features/realtime"
 	"familytime/backend/internal/features/results"
 	"familytime/backend/internal/features/rooms"
+	"familytime/backend/internal/features/solo"
 	"familytime/backend/internal/games/quiz"
+	"familytime/backend/internal/lib/vatar"
 	"familytime/backend/internal/shared/middleware"
 )
 
@@ -22,6 +25,8 @@ type Deps struct {
 	DB      health.Pinger
 	Bank    *questions.Bank
 	Results *results.Service
+	// The Lagos Life client. Nil builds one from the environment.
+	Platform platform.Platform
 }
 
 type App struct {
@@ -40,15 +45,41 @@ func Build(deps Deps) *App {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	if deps.Platform == nil {
+		client, err := vatar.New(vatar.Config{
+			BaseURL:       deps.Env.VatarBaseURL,
+			Secret:        deps.Env.VatarSecret,
+			ResultsSecret: deps.Env.VatarResultsSecret,
+			AllowDev:      !deps.Env.IsProduction(),
+		})
+		if err != nil {
+			// Only an unparseable base URL fails; fall back to the default one.
+			client, _ = vatar.New(vatar.Config{Secret: deps.Env.VatarSecret, ResultsSecret: deps.Env.VatarResultsSecret, AllowDev: !deps.Env.IsProduction()})
+		}
+		deps.Platform = client
+	}
+
+	// The finished-game hook is set after the services exist, because the
+	// platform service both needs the registry and listens to it.
+	var platformService *platform.Service
+
 	joinURL := JoinURL(deps.Env.AppURL)
 	registry := engine.NewRegistry(engine.RegistryOptions{
-		JoinURL:    joinURL,
-		OnFinished: deps.Results.Record,
+		JoinURL: joinURL,
+		OnFinished: func(finished engine.FinishedGame) {
+			deps.Results.Record(finished)
+			// After the record is written: reporting a duel can retry for a
+			// while, and must not hold up the history.
+			platformService.OnFinished(finished)
+		},
 	})
 	// Order of registration is the order hosts see the games in.
 	registry.RegisterGame(quiz.NewGame(deps.Bank))
 
 	origins := middleware.NewOriginPolicy(deps.Env.CORSOrigins, !deps.Env.IsProduction())
+
+	soloService := solo.NewService(registry)
+	platformService = platform.NewService(deps.Platform, registry, soloService)
 
 	router := gin.New()
 	// One trusted hop, not an arbitrary chain a client could forge.
@@ -73,6 +104,9 @@ func Build(deps Deps) *App {
 	catalogue.Register(router, catalogue.NewService(registry))
 	rooms.Register(router, rooms.NewService(registry, joinURL))
 	results.Register(router, deps.Results)
+	solo.Register(router, soloService)
+	// Under /api/v1/platform, so it cannot shadow anything above.
+	platform.Register(router, platformService)
 
 	// The realtime gateway. Unversioned and outside /api/v1: it is a socket,
 	// not a REST resource.

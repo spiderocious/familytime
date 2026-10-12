@@ -54,6 +54,11 @@ const (
 	revealMs      = 6000
 	leaderboardMs = 6000
 	roundEndMs    = 9000
+
+	// The quick tempo, for one phone with no big screen.
+	quickIntroMs    = 2500
+	quickRevealMs   = 2600
+	quickRoundEndMs = 3500
 )
 
 const timerPhase = "phase"
@@ -61,16 +66,19 @@ const timerPhase = "phase"
 // View is the quiz as one audience sees it. The right answer is only ever in
 // here from the reveal onward — a client cannot receive it early.
 type View struct {
-	Game              string         `json:"game"`
-	Phase             Phase          `json:"phase"`
-	Pacing            Pacing         `json:"pacing"`
-	Round             int            `json:"round"`
-	TotalRounds       int            `json:"total_rounds"` // 0 when endless
-	QuestionInRound   int            `json:"question_in_round"`
-	QuestionsPerRound int            `json:"questions_per_round"`
-	QuestionSeq       int            `json:"question_seq"`
-	QuestionsAsked    int            `json:"questions_asked"`
-	PhaseStartedAt    engine.EpochMs `json:"phase_started_at"`
+	Game              string `json:"game"`
+	Phase             Phase  `json:"phase"`
+	Pacing            Pacing `json:"pacing"`
+	Round             int    `json:"round"`
+	TotalRounds       int    `json:"total_rounds"` // 0 when endless
+	QuestionInRound   int    `json:"question_in_round"`
+	QuestionsPerRound int    `json:"questions_per_round"`
+	QuestionSeq       int    `json:"question_seq"`
+	QuestionsAsked    int    `json:"questions_asked"`
+	// What each point is scaled by under these settings, in percent.
+	MultiplierPct  int            `json:"multiplier_pct"`
+	Quick          bool           `json:"quick"`
+	PhaseStartedAt engine.EpochMs `json:"phase_started_at"`
 	// Absolute. 0 means the phase waits for the host.
 	Deadline    engine.EpochMs `json:"deadline"`
 	Question    *QuestionView  `json:"question"`

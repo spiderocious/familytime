@@ -80,7 +80,7 @@ func submit(t *testing.T, g *instance, who engine.PlayerRef, choice int, at engi
 }
 
 func host(now engine.EpochMs) engine.ActionCtx {
-	return engine.ActionCtx{Role: engine.AudienceHost, Now: now}
+	return engine.ActionCtx{Role: engine.AudienceHost, IsHost: true, Now: now}
 }
 
 func score(g *instance, who engine.PlayerRef) int { return g.players[who.ID].score }
